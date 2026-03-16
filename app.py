@@ -27,6 +27,8 @@ def load_main_data(filepath):
         df = pd.read_csv(filepath, delimiter=',')
         
     df.columns = df.columns.str.strip()
+    # SOLUCIÓN AL ERROR: Eliminamos columnas duplicadas inmediatamente
+    df = df.loc[:, ~df.columns.duplicated()]
     
     df['Audience'] = df['Audience'].replace({'Private': 'Rider', 'C4B': 'B2B', 'Driver': 'Driver'})
     df = df[df['Audience'].isin(['Rider', 'B2B', 'Driver'])]
@@ -44,7 +46,7 @@ def load_main_data(filepath):
         matched_col = next((c for c in df.columns if col.replace(' ', '') in c.replace(' ', '')), None)
         if matched_col:
             df[matched_col] = df[matched_col].apply(parse_num)
-            df = df.rename(columns={matched_col: col}) # Solución al problema de los Nones
+            df = df.rename(columns={matched_col: col}) 
     return df
 
 # --- CARGA DEL REPORTE AEROPUERTO ---
@@ -56,6 +58,9 @@ def load_airport_data(filepath):
         df = pd.read_csv(filepath, delimiter=',')
         
     df.columns = df.columns.str.strip()
+    # SOLUCIÓN AL ERROR: Eliminamos columnas duplicadas inmediatamente
+    df = df.loc[:, ~df.columns.duplicated()]
+    
     df['Audience'] = 'Aeropuerto'
     
     df['Date_Time'] = pd.to_datetime(df['Fecha de Referencia'], format='%d/%m/%Y', errors='coerce')
@@ -94,16 +99,26 @@ def aggregate_weekly(df):
         res['Contactos Chat'] = len(grp[grp['Contact Type'] == 'Chat'])
         res['Contactos Call'] = len(grp[grp['Contact Type'] == 'Call'])
         
-        res['NPS'] = grp['NPS Score'].mean()
-        csat = grp['% CSAT'].mean()
-        res['CSAT (%)'] = csat * 100 if pd.notna(csat) and csat <= 1.0 else csat
-        res['TMO (Hrs)'] = grp['# Full Resolution Time (Hours)'].mean()
-        
-        valid_frt = grp['# First Reply Time (Hours)'].dropna()
-        res['FiRT <24h (%)'] = (valid_frt < 24).mean() * 100 if len(valid_frt) > 0 else np.nan
-        
-        valid_res = grp['# Full Resolution Time (Hours)'].dropna()
-        res['FuRT <36h (%)'] = (valid_res < 36).mean() * 100 if len(valid_res) > 0 else np.nan
+        if 'NPS Score' in grp.columns: res['NPS'] = grp['NPS Score'].mean()
+        else: res['NPS'] = np.nan
+            
+        if '% CSAT' in grp.columns:
+            csat = grp['% CSAT'].mean()
+            res['CSAT (%)'] = csat * 100 if pd.notna(csat) and csat <= 1.0 else csat
+        else: res['CSAT (%)'] = np.nan
+            
+        if '# Full Resolution Time (Hours)' in grp.columns:
+            res['TMO (Hrs)'] = grp['# Full Resolution Time (Hours)'].mean()
+            valid_res = grp['# Full Resolution Time (Hours)'].dropna()
+            res['FuRT <36h (%)'] = (valid_res < 36).mean() * 100 if len(valid_res) > 0 else np.nan
+        else:
+            res['TMO (Hrs)'] = np.nan
+            res['FuRT <36h (%)'] = np.nan
+            
+        if '# First Reply Time (Hours)' in grp.columns:
+            valid_frt = grp['# First Reply Time (Hours)'].dropna()
+            res['FiRT <24h (%)'] = (valid_frt < 24).mean() * 100 if len(valid_frt) > 0 else np.nan
+        else: res['FiRT <24h (%)'] = np.nan
         
         if '#\xa0Tickets con reopen' in grp.columns:
             reopens = grp['#\xa0Tickets con reopen'].sum()
@@ -227,7 +242,7 @@ if file_main is not None and file_airport is not None:
     df_main = load_main_data(file_main)
     df_airport = load_airport_data(file_airport)
     
-    # Unimos ambos DataFrames maestramente
+    # Concatenamos cuidando los índices
     df_raw = pd.concat([df_main, df_airport], ignore_index=True)
     df_metrics = aggregate_weekly(df_raw)
     
@@ -258,19 +273,20 @@ if file_main is not None and file_airport is not None:
     # EXPORTAR EXCEL NPS VÁLIDO
     st.sidebar.divider()
     st.sidebar.subheader("📥 Exportar Datos Crudos")
-    df_valid_nps = df_raw.dropna(subset=['NPS Score'])
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        for aud in audiences:
-            df_aud = df_valid_nps[df_valid_nps['Audience'] == aud]
-            if not df_aud.empty:
-                _ = df_aud.to_excel(writer, sheet_name=aud, index=False)
-    st.sidebar.download_button(
-        label="Descargar Reporte NPS (.xlsx)",
-        data=output.getvalue(),
-        file_name="Reporte_NPS_Valido_Cabify.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    if 'NPS Score' in df_raw.columns:
+        df_valid_nps = df_raw.dropna(subset=['NPS Score'])
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            for aud in audiences:
+                df_aud = df_valid_nps[df_valid_nps['Audience'] == aud]
+                if not df_aud.empty:
+                    _ = df_aud.to_excel(writer, sheet_name=aud, index=False)
+        st.sidebar.download_button(
+            label="Descargar Reporte NPS (.xlsx)",
+            data=output.getvalue(),
+            file_name="Reporte_NPS_Valido_Cabify.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
     
     # --- TABS PARA EL DASHBOARD ---
     tab1, tab2 = st.tabs(["📈 KPIs Semanales y Tendencias", "🔍 Deep Dive (Motivos 3er Nivel)"])
