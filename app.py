@@ -63,6 +63,10 @@ def load_main_data(filepath):
     df = read_csv_robust(filepath)
     df = df.loc[:, ~df.columns.duplicated()] 
     
+    # --- NUEVO FILTRO: Include Contacts == 'Rest' ---
+    if 'Include Contacts' in df.columns:
+        df = df[df['Include Contacts'].astype(str).str.strip().str.lower() == 'rest']
+    
     mapping = {
         'Date_Time': 'Date_Time', 'Audience': 'Audience', 'Contact Type': 'Contact Type',
         'NPS Score': 'NPS_Score', '% CSAT': 'CSAT_Pct', '# First Reply Time (Hours)': 'FRT_Hours',
@@ -197,8 +201,6 @@ def generar_texto_slack(df_metrics, week):
     lines.append("*--- RESUMEN DE INDICADORES ---*\n")
 
     audiences_in_week = df_metrics[df_metrics['Week'] == week]['Audience'].unique()
-    
-    # Mapeo de iconos
     iconos = {'Rider': '🚶', 'Driver': '🚘', 'B2B': '🏢', 'Emergencias': '🚑', 'Aeropuerto': '✈️'}
     
     for aud in ['Rider', 'Driver', 'B2B', 'Emergencias', 'Aeropuerto']:
@@ -210,7 +212,6 @@ def generar_texto_slack(df_metrics, week):
         curr = curr_df.iloc[0]
         prev = prev_df.iloc[0] if not prev_df.empty else curr * 0
 
-        # Cálculos
         vol_curr = curr['Contactos Recibidos']
         vol_prev = prev['Contactos Recibidos']
         vol_wow = ((vol_curr - vol_prev) / vol_prev * 100) if vol_prev else 0
@@ -359,7 +360,7 @@ with c_up2:
     file_airport = st.file_uploader("2. Archivo Aeropuerto (Firt Datos)", type=['csv'])
 
 if file_main is not None and file_airport is not None:
-    with st.spinner('Escaneando, limpiando y fusionando archivos de forma robusta...'):
+    with st.spinner('Procesando, filtrando y consolidando archivos...'):
         df_main = load_main_data(file_main)
         df_airport = load_airport_data(file_airport)
         
@@ -377,6 +378,7 @@ if file_main is not None and file_airport is not None:
     available_weeks = sorted(df_filtered['Week'].dropna().unique(), reverse=True)
     selected_week = st.sidebar.selectbox("Selecciona la Semana a visualizar", available_weeks, index=0)
     
+    # EXPORTAR RESUMEN EJECUTIVO EN PDF
     st.sidebar.divider()
     st.sidebar.subheader("📄 Reporte Directivo (PDF)")
     st.sidebar.caption("Descarga el resumen con gráficos evolutivos y análisis de detractores.")
@@ -389,6 +391,7 @@ if file_main is not None and file_airport is not None:
         mime="application/pdf"
     )
 
+    # EXPORTAR EXCEL NPS VÁLIDO
     st.sidebar.divider()
     st.sidebar.subheader("📥 Exportar Datos Crudos")
     
