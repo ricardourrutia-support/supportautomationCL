@@ -103,7 +103,6 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
             pdf.set_text_color(150, 150, 150)
             delta_str = "(=0.0)"
         else:
-            # Lógica de colores (Rojo/Verde)
             if delta_val > 0:
                 pdf.set_text_color(0, 209, 163) if is_higher_better else pdf.set_text_color(255, 82, 82)
             else:
@@ -115,7 +114,7 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
         pdf.cell(0, 6, clean_txt(delta_str), ln=1)
         
     pdf.set_font("Arial", 'B', 16)
-    pdf.set_text_color(115, 82, 255) # Cabify Purple
+    pdf.set_text_color(115, 82, 255)
     pdf.cell(0, 10, clean_txt(f"Resumen Ejecutivo C_OPS - Semana {week}"), ln=True, align='C')
     pdf.ln(5)
 
@@ -137,21 +136,19 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
             firt_diff = curr['FiRT <24h (%)'] - prev['FiRT <24h (%)']
             reop_diff = curr['Ratio Reopen/Tickets (%)'] - prev['Ratio Reopen/Tickets (%)']
 
-            # Escribir Métricas con color
             print_metric_line("Volumen", f"{curr['Contactos Recibidos']:,.0f}", vol_pct, is_higher_better=False, is_pct=True)
             print_metric_line("NPS Score", f"{curr['NPS']:.1f}", nps_diff, is_higher_better=True, is_pct=False)
             print_metric_line("CSAT (%)", f"{curr['CSAT (%)']:.1f}%", csat_diff, is_higher_better=True, is_pct=True)
             print_metric_line("FiRT <24h", f"{curr['FiRT <24h (%)']:.1f}%", firt_diff, is_higher_better=True, is_pct=True)
             print_metric_line("Ratio Reopen", f"{curr['Ratio Reopen/Tickets (%)']:.1f}%", reop_diff, is_higher_better=False, is_pct=True)
 
-            # --- ANÁLISIS DE DETRACTORES (NPS -100) ---
-            if curr['NPS'] < 0: # Si el NPS promedio está castigado (es negativo)
+            if curr['NPS'] < 0:
                 detractores = df_raw[(df_raw['Audience'] == aud) & (df_raw['Week'] == week) & (df_raw['NPS Score'] == -100)]
                 if not detractores.empty and 'ES Output Tags 3rd Level v2' in detractores.columns:
                     pdf.ln(2)
                     pdf.set_font("Arial", 'B', 9)
-                    pdf.set_text_color(255, 82, 82) # Alerta en Rojo
-                    pdf.cell(0, 5, clean_txt("  [!] ALERTA NPS: Top motivos de detractores (Puntuación -100):"), ln=True)
+                    pdf.set_text_color(255, 82, 82)
+                    pdf.cell(0, 5, clean_txt("  [!] ALERTA NPS: Top motivos de detractores (Puntuacion -100):"), ln=True)
                     
                     pdf.set_font("Arial", '', 9)
                     pdf.set_text_color(80, 80, 80)
@@ -159,7 +156,6 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
                     for tag, count in top_tags.items():
                         pdf.cell(0, 5, clean_txt(f"      * {tag} ({count} casos)"), ln=True)
                     
-                    # Ejemplo real (Descripción)
                     top_tag_name = top_tags.index[0]
                     sample_desc = detractores[(detractores['ES Output Tags 3rd Level v2'] == top_tag_name) & (detractores['Description'].notna())]
                     if not sample_desc.empty:
@@ -217,7 +213,7 @@ if uploaded_file is not None:
         for aud in audiences:
             df_aud = df_valid_nps[df_valid_nps['Audience'] == aud]
             if not df_aud.empty:
-                df_aud.to_excel(writer, sheet_name=aud, index=False)
+                _ = df_aud.to_excel(writer, sheet_name=aud, index=False) # Asignado a "_" para evitar "Nones"
     st.sidebar.download_button(
         label="Descargar Reporte NPS (.xlsx)",
         data=output.getvalue(),
@@ -248,36 +244,40 @@ if uploaded_file is not None:
             
             st.markdown("#### I. Performance General de Gestión")
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Contactos Recibidos", f"{curr['Contactos Recibidos']:,.0f}", calc_delta_pct(curr['Contactos Recibidos'], prev['Contactos Recibidos']), delta_color="inverse")
-            c2.metric("Contactos Ticket", f"{curr['Contactos Ticket']:,.0f}", calc_delta_pct(curr['Contactos Ticket'], prev['Contactos Ticket']), delta_color="inverse")
-            c3.metric("Contactos Chat", f"{curr['Contactos Chat']:,.0f}", calc_delta_pct(curr['Contactos Chat'], prev['Contactos Chat']), delta_color="inverse")
-            c4.metric("Contactos Call", f"{curr['Contactos Call']:,.0f}", calc_delta_pct(curr['Contactos Call'], prev['Contactos Call']), delta_color="inverse")
+            # Agregamos "with cX:" para evitar los múltiples "None"
+            with c1: st.metric("Contactos Recibidos", f"{curr['Contactos Recibidos']:,.0f}", calc_delta_pct(curr['Contactos Recibidos'], prev['Contactos Recibidos']), delta_color="inverse")
+            with c2: st.metric("Contactos Ticket", f"{curr['Contactos Ticket']:,.0f}", calc_delta_pct(curr['Contactos Ticket'], prev['Contactos Ticket']), delta_color="inverse")
+            with c3: st.metric("Contactos Chat", f"{curr['Contactos Chat']:,.0f}", calc_delta_pct(curr['Contactos Chat'], prev['Contactos Chat']), delta_color="inverse")
+            with c4: st.metric("Contactos Call", f"{curr['Contactos Call']:,.0f}", calc_delta_pct(curr['Contactos Call'], prev['Contactos Call']), delta_color="inverse")
             
             c5, c6, c7 = st.columns(3)
-            c5.metric("NPS Score", f"{curr['NPS']:.2f}", calc_delta_abs(curr['NPS'], prev['NPS']), delta_color="normal")
-            c6.metric("CSAT", f"{curr['CSAT (%)']:.1f}%", calc_delta_abs(curr['CSAT (%)'], prev['CSAT (%)']) + "%", delta_color="normal")
+            with c5: st.metric("NPS Score", f"{curr['NPS']:.2f}", calc_delta_abs(curr['NPS'], prev['NPS']), delta_color="normal")
+            with c6: st.metric("CSAT", f"{curr['CSAT (%)']:.1f}%", calc_delta_abs(curr['CSAT (%)'], prev['CSAT (%)']) + "%", delta_color="normal")
             
             st.divider()
             
             st.markdown("#### II. Calidad Gestión de Tickets")
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("TMO Promedio (Hrs)", f"{curr['TMO (Hrs)']:.2f}", calc_delta_abs(curr['TMO (Hrs)'], prev['TMO (Hrs)']), delta_color="inverse")
-            c2.metric("SLA 1ra Respuesta (<24hrs)", f"{curr['FiRT <24h (%)']:.2f}%", calc_delta_abs(curr['FiRT <24h (%)'], prev['FiRT <24h (%)']) + "%", delta_color="normal")
-            c3.metric("SLA Resolución (<36hrs)", f"{curr['FuRT <36h (%)']:.2f}%", calc_delta_abs(curr['FuRT <36h (%)'], prev['FuRT <36h (%)']) + "%", delta_color="normal")
-            c4.metric("Ratio Reopen / Tickets", f"{curr['Ratio Reopen/Tickets (%)']:.2f}%", calc_delta_abs(curr['Ratio Reopen/Tickets (%)'], prev['Ratio Reopen/Tickets (%)']) + "%", delta_color="inverse")
+            with c1: st.metric("TMO Promedio (Hrs)", f"{curr['TMO (Hrs)']:.2f}", calc_delta_abs(curr['TMO (Hrs)'], prev['TMO (Hrs)']), delta_color="inverse")
+            with c2: st.metric("SLA 1ra Respuesta (<24hrs)", f"{curr['FiRT <24h (%)']:.2f}%", calc_delta_abs(curr['FiRT <24h (%)'], prev['FiRT <24h (%)']) + "%", delta_color="normal")
+            with c3: st.metric("SLA Resolución (<36hrs)", f"{curr['FuRT <36h (%)']:.2f}%", calc_delta_abs(curr['FuRT <36h (%)'], prev['FuRT <36h (%)']) + "%", delta_color="normal")
+            with c4: st.metric("Ratio Reopen / Tickets", f"{curr['Ratio Reopen/Tickets (%)']:.2f}%", calc_delta_abs(curr['Ratio Reopen/Tickets (%)'], prev['Ratio Reopen/Tickets (%)']) + "%", delta_color="inverse")
             
             st.divider()
             
             st.markdown("#### III. Calidad Gestión Canales Real Time")
             c1, c2 = st.columns(2)
             if pd.notna(curr['% Llamadas Atendidas']):
-                c1.metric("% Llamadas Atendidas", f"{curr['% Llamadas Atendidas']:.2f}%", calc_delta_abs(curr['% Llamadas Atendidas'], prev['% Llamadas Atendidas']) + "%", delta_color="normal")
-            else: c1.metric("% Llamadas Atendidas", "S/D")
+                with c1: st.metric("% Llamadas Atendidas", f"{curr['% Llamadas Atendidas']:.2f}%", calc_delta_abs(curr['% Llamadas Atendidas'], prev['% Llamadas Atendidas']) + "%", delta_color="normal")
+            else: 
+                with c1: st.metric("% Llamadas Atendidas", "S/D")
+                
             if pd.notna(curr['% Chats Atendidos']):
-                c2.metric("% Chats Atendidos", f"{curr['% Chats Atendidos']:.2f}%", calc_delta_abs(curr['% Chats Atendidos'], prev['% Chats Atendidos']) + "%", delta_color="normal")
-            else: c2.metric("% Chats Atendidos", "S/D")
+                with c2: st.metric("% Chats Atendidos", f"{curr['% Chats Atendidos']:.2f}%", calc_delta_abs(curr['% Chats Atendidos'], prev['% Chats Atendidos']) + "%", delta_color="normal")
+            else: 
+                with c2: st.metric("% Chats Atendidos", "S/D")
 
-            # --- GRÁFICOS DE TENDENCIA SUAVIZADOS ---
+            # --- GRÁFICOS DE TENDENCIA (SUAVIZADOS) ---
             st.divider()
             st.markdown("#### 📈 Evolución Histórica")
             col_g1, col_g2 = st.columns(2)
@@ -285,15 +285,15 @@ if uploaded_file is not None:
             with col_g1:
                 fig_vol = px.line(df_filtered, x='Week', y='Contactos Recibidos', markers=True, 
                                   title="Volumen de Contactos", color_discrete_sequence=[CABIFY_PURPLE])
-                fig_vol.update_layout(plot_bgcolor="white", xaxis_title="Semana", yaxis_title="Contactos")
-                fig_vol.update_yaxes(rangemode="tozero") # Forzamos que inicie en 0
+                _ = fig_vol.update_layout(plot_bgcolor="white", xaxis_title="Semana", yaxis_title="Contactos")
+                _ = fig_vol.update_yaxes(rangemode="tozero") # Forzamos que inicie en 0
                 st.plotly_chart(fig_vol, use_container_width=True)
                 
             with col_g2:
                 fig_nps = px.line(df_filtered, x='Week', y=['NPS', 'CSAT (%)'], markers=True,
                                   title="Experiencia y Calidad", color_discrete_sequence=[CABIFY_PURPLE, CABIFY_SECONDARY])
-                fig_nps.update_layout(plot_bgcolor="white", xaxis_title="Semana", yaxis_title="Score / %")
-                fig_nps.update_yaxes(range=[-100, 100]) # Forzamos escala fija para evitar saltos drásticos
+                _ = fig_nps.update_layout(plot_bgcolor="white", xaxis_title="Semana", yaxis_title="Score / %")
+                _ = fig_nps.update_yaxes(range=[-100, 100]) # Forzamos escala fija para evitar saltos drásticos
                 st.plotly_chart(fig_nps, use_container_width=True)
 
     with tab2:
@@ -307,7 +307,7 @@ if uploaded_file is not None:
             
             fig_tags = px.bar(top_tags, x='Volumen', y='Motivo (Tag 3er Nivel)', orientation='h',
                               color_discrete_sequence=[CABIFY_SECONDARY])
-            fig_tags.update_layout(yaxis={'categoryorder':'total ascending'}, plot_bgcolor="white")
+            _ = fig_tags.update_layout(yaxis={'categoryorder':'total ascending'}, plot_bgcolor="white")
             st.plotly_chart(fig_tags, use_container_width=True)
             
             st.markdown("#### Ejemplos Reales (Descripción del Usuario)")
