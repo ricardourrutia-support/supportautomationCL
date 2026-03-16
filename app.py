@@ -14,30 +14,35 @@ st.set_page_config(page_title="Cabify Support Dashboard", layout="wide", initial
 CABIFY_PURPLE = "#7352FF"
 CABIFY_SECONDARY = "#00D1A3"
 
-# Columnas Core (Agregamos Tag 1)
+# Columnas Core 
 CORE_COLUMNS = [
     'Date_Time', 'Audience', 'Contact Type', 'NPS_Score', 'CSAT_Pct', 
     'FRT_Hours', 'FuRT_Hours', 'Reopen_Count', 'Tag_1', 'Tag_2', 
     'Tag_3', 'Chat_Missed', 'Description', 'Group_Name'
 ]
 
-# --- LECTOR ROBUSTO DE CSV (Anti-Errores de Formato y Tildes) ---
-def read_csv_robust(filepath, date_col_hint):
-    try:
-        # Intento 1: UTF-8 y punto y coma
-        filepath.seek(0)
-        df = pd.read_csv(filepath, delimiter=';', low_memory=False, encoding='utf-8')
-        if date_col_hint not in df.columns:
-            # Intento 2: UTF-8 y coma
-            filepath.seek(0)
-            df = pd.read_csv(filepath, delimiter=',', low_memory=False, encoding='utf-8')
-    except UnicodeDecodeError:
-        # Si falla por tildes/eñes, usamos formato Latino (Latin-1)
-        filepath.seek(0)
-        df = pd.read_csv(filepath, delimiter=';', low_memory=False, encoding='latin-1')
-        if date_col_hint not in df.columns:
-            filepath.seek(0)
-            df = pd.read_csv(filepath, delimiter=',', low_memory=False, encoding='latin-1')
+# --- LECTOR ROBUSTO DE CSV (Anti-Errores de Parser y Formato) ---
+def read_csv_robust(filepath):
+    encodings_to_try = ['utf-8-sig', 'utf-8', 'latin-1']
+    delimiters_to_try = [';', ',']
+    
+    for enc in encodings_to_try:
+        for sep in delimiters_to_try:
+            try:
+                filepath.seek(0)
+                # on_bad_lines='skip' evita el ParserError saltando filas corruptas
+                df = pd.read_csv(filepath, delimiter=sep, low_memory=False, encoding=enc, on_bad_lines='skip')
+                # Si logró separar en más de 1 columna, asumimos éxito
+                if len(df.columns) > 1:
+                    df.columns = df.columns.str.strip()
+                    return df
+            except Exception:
+                continue
+                
+    # Fallback extremo
+    filepath.seek(0)
+    df = pd.read_csv(filepath, delimiter=';', low_memory=False, encoding='latin-1', on_bad_lines='skip')
+    df.columns = df.columns.str.strip()
     return df
 
 def parse_num(s):
@@ -58,8 +63,7 @@ def standard_clean(df, mapping):
 # --- CARGA DEL REPORTE GENERAL ---
 @st.cache_data
 def load_main_data(filepath):
-    df = read_csv_robust(filepath, 'Date_Time')
-    df.columns = df.columns.str.strip()
+    df = read_csv_robust(filepath)
     df = df.loc[:, ~df.columns.duplicated()] 
     
     mapping = {
@@ -83,7 +87,9 @@ def load_main_data(filepath):
         df_em['Audience'] = 'Emergencias'
         df = pd.concat([df, df_em], ignore_index=True)
         
-    df['Date_Time'] = pd.to_datetime(df['Date_Time'], format='%d/%m/%Y', errors='coerce')
+    if 'Date_Time' in df.columns:
+        df['Date_Time'] = pd.to_datetime(df['Date_Time'], format='%d/%m/%Y', errors='coerce')
+        
     df = df.loc[:, ~df.columns.duplicated()]
     final_cols = [c for c in CORE_COLUMNS if c in df.columns]
     return df[final_cols].copy()
@@ -91,8 +97,7 @@ def load_main_data(filepath):
 # --- CARGA DEL REPORTE AEROPUERTO ---
 @st.cache_data
 def load_airport_data(filepath):
-    df = read_csv_robust(filepath, 'Fecha de Referencia')
-    df.columns = df.columns.str.strip()
+    df = read_csv_robust(filepath)
     df = df.loc[:, ~df.columns.duplicated()] 
     
     def determine_type(row):
@@ -112,7 +117,10 @@ def load_airport_data(filepath):
     }
     
     df = standard_clean(df, mapping)
-    df['Date_Time'] = pd.to_datetime(df['Date_Time'], format='%d/%m/%Y', errors='coerce')
+    
+    if 'Date_Time' in df.columns:
+        df['Date_Time'] = pd.to_datetime(df['Date_Time'], format='%d/%m/%Y', errors='coerce')
+        
     df = df.loc[:, ~df.columns.duplicated()]
     final_cols = [c for c in CORE_COLUMNS if c in df.columns]
     return df[final_cols].copy()
@@ -241,7 +249,7 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
             print_metric_line("FiRT <24h", f"{curr['FiRT <24h (%)']:.1f}%", firt_diff, is_higher_better=True, is_pct=True)
             print_metric_line("Ratio Reopen", f"{curr['Ratio Reopen/Tickets (%)']:.1f}%", reop_diff, is_higher_better=False, is_pct=True)
 
-            # Insertar Gráfico
+            # Gráfico PDF
             df_trend = df_metrics[df_metrics['Audience'] == aud].sort_values('Week')
             if len(df_trend) > 1:
                 img_path = f"trend_{aud}.png"
@@ -270,11 +278,11 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
                     os.remove(img_path)
                 except Exception: pass
 
-            # Insertar Resumen Ejecutivo de Detractores en PDF
+            # Análisis Narrativo de Detractores
             insight_nps = analizar_detractores(df_raw, aud, week)
             pdf.ln(2)
             if "Excelente" in insight_nps:
-                pdf.set_text_color(0, 209, 163) # Verde Cabify
+                pdf.set_text_color(0, 209, 163) # Verde
             else:
                 pdf.set_text_color(255, 82, 82) # Rojo
             
@@ -299,7 +307,7 @@ with c_up2:
     file_airport = st.file_uploader("2. Archivo Aeropuerto (Firt Datos)", type=['csv'])
 
 if file_main is not None and file_airport is not None:
-    with st.spinner('Procesando, filtrando y consolidando archivos...'):
+    with st.spinner('Escaneando, limpiando y fusionando archivos de forma robusta...'):
         df_main = load_main_data(file_main)
         df_airport = load_airport_data(file_airport)
         
