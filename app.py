@@ -28,7 +28,6 @@ def load_and_clean_data(filepath):
     df_emergencias['Audience'] = 'Emergencias' 
     
     df = pd.concat([df, df_emergencias], ignore_index=True)
-    
     df['Date_Time'] = pd.to_datetime(df['Date_Time'], format='%d/%m/%Y', errors='coerce')
     df['Week'] = df['Date_Time'].dt.isocalendar().week
     
@@ -86,13 +85,34 @@ def aggregate_weekly(df):
     return df.groupby(['Week', 'Audience']).apply(aggs).reset_index()
 
 # --- FUNCIÓN GENERADORA DE PDF ---
-def generar_pdf_resumen(df_metrics, week):
+def generar_pdf_resumen(df_metrics, df_raw, week):
     pdf = FPDF()
     pdf.add_page()
     
-    # Función auxiliar para limpiar caracteres latinos y evitar errores en FPDF
     def clean_txt(text):
+        if pd.isna(text): return ""
+        text = str(text).replace('"', "'").replace('\n', ' ')
         return text.encode('latin-1', 'replace').decode('latin-1')
+        
+    def print_metric_line(label, val_str, delta_val, is_higher_better=True, is_pct=False):
+        pdf.set_font("Arial", '', 10)
+        pdf.set_text_color(0, 0, 0)
+        pdf.cell(50, 6, clean_txt(f"- {label}: {val_str}"), ln=0)
+        
+        if pd.isna(delta_val) or delta_val == 0:
+            pdf.set_text_color(150, 150, 150)
+            delta_str = "(=0.0)"
+        else:
+            # Lógica de colores (Rojo/Verde)
+            if delta_val > 0:
+                pdf.set_text_color(0, 209, 163) if is_higher_better else pdf.set_text_color(255, 82, 82)
+            else:
+                pdf.set_text_color(255, 82, 82) if is_higher_better else pdf.set_text_color(0, 209, 163)
+                    
+            suffix = "% WoW" if is_pct else " WoW"
+            delta_str = f"({delta_val:+.1f}{suffix})"
+            
+        pdf.cell(0, 6, clean_txt(delta_str), ln=1)
         
     pdf.set_font("Arial", 'B', 16)
     pdf.set_text_color(115, 82, 255) # Cabify Purple
@@ -111,30 +131,47 @@ def generar_pdf_resumen(df_metrics, week):
             pdf.set_text_color(0, 0, 0)
             pdf.cell(0, 8, clean_txt(f"Audiencia: {aud}"), ln=True)
 
-            pdf.set_font("Arial", '', 10)
             vol_pct = ((curr['Contactos Recibidos'] - prev['Contactos Recibidos']) / prev['Contactos Recibidos'] * 100) if prev['Contactos Recibidos'] else 0
             nps_diff = curr['NPS'] - prev['NPS']
+            csat_diff = curr['CSAT (%)'] - prev['CSAT (%)']
+            firt_diff = curr['FiRT <24h (%)'] - prev['FiRT <24h (%)']
+            reop_diff = curr['Ratio Reopen/Tickets (%)'] - prev['Ratio Reopen/Tickets (%)']
 
-            # Escribir Métricas
-            pdf.cell(0, 6, clean_txt(f"- Volumen: {curr['Contactos Recibidos']:,.0f} ({vol_pct:+.1f}% WoW)"), ln=True)
-            pdf.cell(0, 6, clean_txt(f"- Calidad: NPS {curr['NPS']:.1f} ({nps_diff:+.1f} WoW) | CSAT {curr['CSAT (%)']:.1f}%"), ln=True)
-            pdf.cell(0, 6, clean_txt(f"- Eficiencia: FiRT <24h {curr['FiRT <24h (%)']:.1f}% | Reopen {curr['Ratio Reopen/Tickets (%)']:.1f}%"), ln=True)
+            # Escribir Métricas con color
+            print_metric_line("Volumen", f"{curr['Contactos Recibidos']:,.0f}", vol_pct, is_higher_better=False, is_pct=True)
+            print_metric_line("NPS Score", f"{curr['NPS']:.1f}", nps_diff, is_higher_better=True, is_pct=False)
+            print_metric_line("CSAT (%)", f"{curr['CSAT (%)']:.1f}%", csat_diff, is_higher_better=True, is_pct=True)
+            print_metric_line("FiRT <24h", f"{curr['FiRT <24h (%)']:.1f}%", firt_diff, is_higher_better=True, is_pct=True)
+            print_metric_line("Ratio Reopen", f"{curr['Ratio Reopen/Tickets (%)']:.1f}%", reop_diff, is_higher_better=False, is_pct=True)
 
-            # Generar Insight Automático
-            insight = "Insight: "
-            if vol_pct > 10: insight += "Fuerte aumento de volumen. "
-            elif vol_pct < -10: insight += "Caida de volumen que desahoga la operacion. "
-            else: insight += "Volumen estable. "
+            # --- ANÁLISIS DE DETRACTORES (NPS -100) ---
+            if curr['NPS'] < 0: # Si el NPS promedio está castigado (es negativo)
+                detractores = df_raw[(df_raw['Audience'] == aud) & (df_raw['Week'] == week) & (df_raw['NPS Score'] == -100)]
+                if not detractores.empty and 'ES Output Tags 3rd Level v2' in detractores.columns:
+                    pdf.ln(2)
+                    pdf.set_font("Arial", 'B', 9)
+                    pdf.set_text_color(255, 82, 82) # Alerta en Rojo
+                    pdf.cell(0, 5, clean_txt("  [!] ALERTA NPS: Top motivos de detractores (Puntuación -100):"), ln=True)
+                    
+                    pdf.set_font("Arial", '', 9)
+                    pdf.set_text_color(80, 80, 80)
+                    top_tags = detractores['ES Output Tags 3rd Level v2'].value_counts().head(3)
+                    for tag, count in top_tags.items():
+                        pdf.cell(0, 5, clean_txt(f"      * {tag} ({count} casos)"), ln=True)
+                    
+                    # Ejemplo real (Descripción)
+                    top_tag_name = top_tags.index[0]
+                    sample_desc = detractores[(detractores['ES Output Tags 3rd Level v2'] == top_tag_name) & (detractores['Description'].notna())]
+                    if not sample_desc.empty:
+                        desc_text = str(sample_desc['Description'].iloc[0])[:120] + "..."
+                        pdf.set_font("Arial", 'I', 8)
+                        pdf.set_text_color(120, 120, 120)
+                        pdf.multi_cell(0, 4, clean_txt(f"      Ej. real: '{desc_text}'"))
 
-            if nps_diff <= -5: insight += "Alerta por caida de NPS. Requiere revisar Output Tags. "
-            elif nps_diff >= 5: insight += "Mejora significativa en la experiencia del usuario. "
-            
-            if curr['Ratio Reopen/Tickets (%)'] > 12: insight += "Alto Reopen rate, atacar calidad de primera resolucion."
-
-            pdf.set_text_color(0, 209, 163) # Cabify Secondary
-            pdf.multi_cell(0, 6, clean_txt(insight))
-            pdf.set_text_color(0, 0, 0)
             pdf.ln(5)
+            pdf.set_draw_color(200, 200, 200)
+            pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+            pdf.ln(3)
 
     return pdf.output(dest='S').encode('latin-1')
 
@@ -158,11 +195,11 @@ if uploaded_file is not None:
     selected_week = st.sidebar.selectbox("Selecciona la Semana a visualizar", available_weeks, index=0)
     
     # -------------------------------------------------------------
-    # NUEVO: EXPORTAR RESUMEN EJECUTIVO EN PDF
+    # EXPORTAR RESUMEN EJECUTIVO EN PDF
     st.sidebar.divider()
     st.sidebar.subheader("📄 Reporte Directivo (PDF)")
-    st.sidebar.caption("Descarga el resumen escrito de todas las audiencias para la semana seleccionada.")
-    pdf_bytes = generar_pdf_resumen(df_metrics, selected_week)
+    st.sidebar.caption("Descarga el resumen de todas las audiencias con código de color y análisis de NPS automático.")
+    pdf_bytes = generar_pdf_resumen(df_metrics, df_raw, selected_week)
     st.sidebar.download_button(
         label="Descargar Executive Summary (.pdf)",
         data=pdf_bytes,
@@ -240,7 +277,7 @@ if uploaded_file is not None:
                 c2.metric("% Chats Atendidos", f"{curr['% Chats Atendidos']:.2f}%", calc_delta_abs(curr['% Chats Atendidos'], prev['% Chats Atendidos']) + "%", delta_color="normal")
             else: c2.metric("% Chats Atendidos", "S/D")
 
-            # --- GRÁFICOS DE TENDENCIA (SUAVIZADOS) ---
+            # --- GRÁFICOS DE TENDENCIA SUAVIZADOS ---
             st.divider()
             st.markdown("#### 📈 Evolución Histórica")
             col_g1, col_g2 = st.columns(2)
@@ -249,16 +286,14 @@ if uploaded_file is not None:
                 fig_vol = px.line(df_filtered, x='Week', y='Contactos Recibidos', markers=True, 
                                   title="Volumen de Contactos", color_discrete_sequence=[CABIFY_PURPLE])
                 fig_vol.update_layout(plot_bgcolor="white", xaxis_title="Semana", yaxis_title="Contactos")
-                # Suavizamos gráfico de volumen anclándolo a 0
-                fig_vol.update_yaxes(rangemode="tozero")
+                fig_vol.update_yaxes(rangemode="tozero") # Forzamos que inicie en 0
                 st.plotly_chart(fig_vol, use_container_width=True)
                 
             with col_g2:
                 fig_nps = px.line(df_filtered, x='Week', y=['NPS', 'CSAT (%)'], markers=True,
                                   title="Experiencia y Calidad", color_discrete_sequence=[CABIFY_PURPLE, CABIFY_SECONDARY])
                 fig_nps.update_layout(plot_bgcolor="white", xaxis_title="Semana", yaxis_title="Score / %")
-                # Fijamos escala entre -100 y 100 para evitar saltos drásticos en variaciones pequeñas
-                fig_nps.update_yaxes(range=[-100, 100])
+                fig_nps.update_yaxes(range=[-100, 100]) # Forzamos escala fija para evitar saltos drásticos
                 st.plotly_chart(fig_nps, use_container_width=True)
 
     with tab2:
