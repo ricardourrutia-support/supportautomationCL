@@ -10,6 +10,14 @@ st.set_page_config(page_title="Cabify Support Dashboard", layout="wide", initial
 CABIFY_PURPLE = "#7352FF"
 CABIFY_SECONDARY = "#00D1A3"
 
+# Definimos las columnas clave que necesita la app para funcionar
+CORE_COLUMNS = [
+    'Date_Time', 'Audience', 'Contact Type', 'NPS Score', '% CSAT', 
+    '# First Reply Time (Hours)', '# Full Resolution Time (Hours)', 
+    '#\xa0Tickets con reopen', 'ES Output Tags 2nd Level v2', 
+    'ES Output Tags 3rd Level v2', 'Chat Missed', 'Description', 'Group name support'
+]
+
 def parse_num(s):
     if pd.isna(s): return np.nan
     s = str(s).strip().replace('%', '')
@@ -27,7 +35,6 @@ def load_main_data(filepath):
         df = pd.read_csv(filepath, delimiter=',')
         
     df.columns = df.columns.str.strip()
-    # SOLUCIÓN AL ERROR: Eliminamos columnas duplicadas inmediatamente
     df = df.loc[:, ~df.columns.duplicated()]
     
     df['Audience'] = df['Audience'].replace({'Private': 'Rider', 'C4B': 'B2B', 'Driver': 'Driver'})
@@ -39,41 +46,38 @@ def load_main_data(filepath):
     df = pd.concat([df, df_emergencias], ignore_index=True)
     
     df['Date_Time'] = pd.to_datetime(df['Date_Time'], format='%d/%m/%Y', errors='coerce')
-    df['Week'] = df['Date_Time'].dt.isocalendar().week
     
     cols_to_clean = ['% CSAT', '# First Reply Time (Hours)', '# Full Resolution Time (Hours)', '#\xa0Tickets con reopen', 'NPS Score']
     for col in cols_to_clean:
         matched_col = next((c for c in df.columns if col.replace(' ', '') in c.replace(' ', '')), None)
         if matched_col:
             df[matched_col] = df[matched_col].apply(parse_num)
-            df = df.rename(columns={matched_col: col}) 
-    return df
+            df = df.rename(columns={matched_col: col})
+            
+    # Mantenemos solo las columnas Core si existen en el DF
+    final_cols = [c for c in CORE_COLUMNS if c in df.columns]
+    return df[final_cols]
 
 # --- CARGA DEL REPORTE AEROPUERTO ---
 @st.cache_data
 def load_airport_data(filepath):
-    df = pd.read_csv(filepath, delimiter=';')
+    df = pd.read_csv(filepath, delimiter=';', low_memory=False)
     if 'Fecha de Referencia' not in df.columns:
         filepath.seek(0)
-        df = pd.read_csv(filepath, delimiter=',')
+        df = pd.read_csv(filepath, delimiter=',', low_memory=False)
         
     df.columns = df.columns.str.strip()
-    # SOLUCIÓN AL ERROR: Eliminamos columnas duplicadas inmediatamente
     df = df.loc[:, ~df.columns.duplicated()]
     
     df['Audience'] = 'Aeropuerto'
-    
     df['Date_Time'] = pd.to_datetime(df['Fecha de Referencia'], format='%d/%m/%Y', errors='coerce')
-    df['Week'] = df['Date_Time'].dt.isocalendar().week
     
-    # Construcción de Contact Type a partir de las variables booleanas
     def determine_type(row):
         if row.get('# Tickets - Call', 0) == 1: return 'Call'
         if row.get('# Tickets - Chats', 0) == 1: return 'Chat'
         return 'Ticket'
     df['Contact Type'] = df.apply(determine_type, axis=1)
     
-    # Mapeo de columnas para que encaje con el general
     col_mapping = {
         '# First Reply Time (Hours)': '# First Reply Time (Hours)',
         '# Full Resolution Time (Hours)': '# Full Resolution Time (Hours)',
@@ -88,10 +92,13 @@ def load_airport_data(filepath):
             df[matched_col] = df[matched_col].apply(parse_num)
             df = df.rename(columns={matched_col: new_col})
             
-    return df
+    final_cols = [c for c in CORE_COLUMNS if c in df.columns]
+    return df[final_cols]
 
 @st.cache_data
 def aggregate_weekly(df):
+    df['Week'] = df['Date_Time'].dt.isocalendar().week
+    
     def aggs(grp):
         res = {}
         res['Contactos Recibidos'] = len(grp)
@@ -200,7 +207,9 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
             print_metric_line("Ratio Reopen", f"{curr['Ratio Reopen/Tickets (%)']:.1f}%", reop_diff, is_higher_better=False, is_pct=True)
 
             if curr['NPS'] < 0:
-                detractores = df_raw[(df_raw['Audience'] == aud) & (df_raw['Week'] == week) & (df_raw['NPS Score'] == -100)]
+                # Calculamos la semana cruda y filtramos
+                df_raw['Week_Temp'] = df_raw['Date_Time'].dt.isocalendar().week
+                detractores = df_raw[(df_raw['Audience'] == aud) & (df_raw['Week_Temp'] == week) & (df_raw['NPS Score'] == -100)]
                 if not detractores.empty and 'ES Output Tags 3rd Level v2' in detractores.columns:
                     pdf.ln(2)
                     pdf.set_font("Arial", 'B', 9)
@@ -214,12 +223,13 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
                         pdf.cell(0, 5, clean_txt(f"      * {tag} ({count} casos)"), ln=True)
                     
                     top_tag_name = top_tags.index[0]
-                    sample_desc = detractores[(detractores['ES Output Tags 3rd Level v2'] == top_tag_name) & (detractores['Description'].notna())]
-                    if not sample_desc.empty:
-                        desc_text = str(sample_desc['Description'].iloc[0])[:120] + "..."
-                        pdf.set_font("Arial", 'I', 8)
-                        pdf.set_text_color(120, 120, 120)
-                        pdf.multi_cell(0, 4, clean_txt(f"      Ej. real: '{desc_text}'"))
+                    if 'Description' in detractores.columns:
+                        sample_desc = detractores[(detractores['ES Output Tags 3rd Level v2'] == top_tag_name) & (detractores['Description'].notna())]
+                        if not sample_desc.empty:
+                            desc_text = str(sample_desc['Description'].iloc[0])[:120] + "..."
+                            pdf.set_font("Arial", 'I', 8)
+                            pdf.set_text_color(120, 120, 120)
+                            pdf.multi_cell(0, 4, clean_txt(f"      Ej. real: '{desc_text}'"))
 
             pdf.ln(5)
             pdf.set_draw_color(200, 200, 200)
@@ -239,12 +249,13 @@ with c_up2:
     file_airport = st.file_uploader("2. Archivo Aeropuerto (Firt Datos)", type=['csv'])
 
 if file_main is not None and file_airport is not None:
-    df_main = load_main_data(file_main)
-    df_airport = load_airport_data(file_airport)
-    
-    # Concatenamos cuidando los índices
-    df_raw = pd.concat([df_main, df_airport], ignore_index=True)
-    df_metrics = aggregate_weekly(df_raw)
+    with st.spinner('Procesando y fusionando archivos...'):
+        df_main = load_main_data(file_main)
+        df_airport = load_airport_data(file_airport)
+        
+        # Concatena de forma segura usando solo las columnas CORE
+        df_raw = pd.concat([df_main, df_airport], ignore_index=True, join='outer')
+        df_metrics = aggregate_weekly(df_raw)
     
     st.sidebar.markdown(f"<h3 style='color: {CABIFY_PURPLE};'>Filtros y Descargas</h3>", unsafe_allow_html=True)
     all_audiences = ['Rider', 'Driver', 'B2B', 'Emergencias', 'Aeropuerto']
@@ -273,20 +284,24 @@ if file_main is not None and file_airport is not None:
     # EXPORTAR EXCEL NPS VÁLIDO
     st.sidebar.divider()
     st.sidebar.subheader("📥 Exportar Datos Crudos")
+    
     if 'NPS Score' in df_raw.columns:
         df_valid_nps = df_raw.dropna(subset=['NPS Score'])
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            for aud in audiences:
-                df_aud = df_valid_nps[df_valid_nps['Audience'] == aud]
-                if not df_aud.empty:
-                    _ = df_aud.to_excel(writer, sheet_name=aud, index=False)
-        st.sidebar.download_button(
-            label="Descargar Reporte NPS (.xlsx)",
-            data=output.getvalue(),
-            file_name="Reporte_NPS_Valido_Cabify.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        if not df_valid_nps.empty:
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                for aud in audiences:
+                    df_aud = df_valid_nps[df_valid_nps['Audience'] == aud]
+                    if not df_aud.empty:
+                        _ = df_aud.to_excel(writer, sheet_name=aud, index=False)
+            st.sidebar.download_button(
+                label="Descargar Reporte NPS (.xlsx)",
+                data=output.getvalue(),
+                file_name="Reporte_NPS_Valido_Cabify.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.sidebar.warning("No hay encuestas de NPS para exportar.")
     
     # --- TABS PARA EL DASHBOARD ---
     tab1, tab2 = st.tabs(["📈 KPIs Semanales y Tendencias", "🔍 Deep Dive (Motivos 3er Nivel)"])
@@ -364,7 +379,8 @@ if file_main is not None and file_airport is not None:
 
     with tab2:
         st.markdown(f"### 🔍 Deep Dive: Motivos de Contacto Nivel 3 ({selected_audience} - Sem {selected_week})")
-        df_raw_filtered = df_raw[(df_raw['Audience'] == selected_audience) & (df_raw['Week'] == selected_week)]
+        df_raw['Week_Temp'] = df_raw['Date_Time'].dt.isocalendar().week
+        df_raw_filtered = df_raw[(df_raw['Audience'] == selected_audience) & (df_raw['Week_Temp'] == selected_week)]
         
         if not df_raw_filtered.empty and 'ES Output Tags 3rd Level v2' in df_raw_filtered.columns:
             top_tags = df_raw_filtered['ES Output Tags 3rd Level v2'].value_counts().reset_index()
