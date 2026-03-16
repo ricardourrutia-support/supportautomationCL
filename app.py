@@ -3,14 +3,27 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import io
+import os
 from fpdf import FPDF
+
+# Forzamos el backend gráfico en segundo plano para evitar errores en Streamlit
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 # Configuración estilo Cabify Minimalista
 st.set_page_config(page_title="Cabify Support Dashboard", layout="wide", initial_sidebar_state="expanded")
 CABIFY_PURPLE = "#7352FF"
 CABIFY_SECONDARY = "#00D1A3"
 
-# --- FUNCIONES DE LIMPIEZA CORE ---
+# Columnas Core
+CORE_COLUMNS = [
+    'Date_Time', 'Audience', 'Contact Type', 'NPS Score', '% CSAT', 
+    '# First Reply Time (Hours)', '# Full Resolution Time (Hours)', 
+    '#\xa0Tickets con reopen', 'ES Output Tags 2nd Level v2', 
+    'ES Output Tags 3rd Level v2', 'Chat Missed', 'Description', 'Group name support'
+]
+
 def parse_num(s):
     if pd.isna(s): return np.nan
     s = str(s).strip().replace('%', '')
@@ -19,47 +32,30 @@ def parse_num(s):
     try: return float(s)
     except: return np.nan
 
-def standard_clean(df, mapping):
-    # Nos quedamos SÓLO con las columnas que pedimos, y las renombramos a un estándar seguro
-    existing_mapping = {k: v for k, v in mapping.items() if k in df.columns}
-    df = df[list(existing_mapping.keys())].rename(columns=existing_mapping)
-    
-    # Limpiamos todos los números a float
-    num_cols = ['NPS_Score', 'CSAT_Pct', 'FRT_Hours', 'FuRT_Hours', 'Reopen_Count']
-    for c in num_cols:
-        if c in df.columns:
-            df[c] = df[c].apply(parse_num)
-    return df
-
 # --- CARGA DEL REPORTE GENERAL ---
 @st.cache_data
 def load_main_data(filepath):
     df = pd.read_csv(filepath, delimiter=';', low_memory=False)
     if 'Date_Time' not in df.columns:
-        filepath.seek(0)
+        _ = filepath.seek(0)
         df = pd.read_csv(filepath, delimiter=',', low_memory=False)
         
     df.columns = df.columns.str.strip()
     df = df.loc[:, ~df.columns.duplicated()] 
     
-    # Mapeo exacto de la base Support General
     mapping = {
-        'Date_Time': 'Date_Time',
-        'Audience': 'Audience',
-        'Contact Type': 'Contact Type',
-        'NPS Score': 'NPS_Score',
-        '% CSAT': 'CSAT_Pct',
-        '# First Reply Time (Hours) ': 'FRT_Hours',
-        '# Full Resolution Time (Hours)': 'FuRT_Hours',
-        '#\xa0Tickets con reopen': 'Reopen_Count',
-        'ES Output Tags 2nd Level v2': 'Tag_2',
-        'ES Output Tags 3rd Level v2': 'Tag_3',
-        'Chat Missed': 'Chat_Missed',
-        'Description': 'Description',
-        'Group name support': 'Group_Name'
+        'Date_Time': 'Date_Time', 'Audience': 'Audience', 'Contact Type': 'Contact Type',
+        'NPS Score': 'NPS_Score', '% CSAT': 'CSAT_Pct', '# First Reply Time (Hours) ': 'FRT_Hours',
+        '# Full Resolution Time (Hours)': 'FuRT_Hours', '#\xa0Tickets con reopen': 'Reopen_Count',
+        'ES Output Tags 2nd Level v2': 'Tag_2', 'ES Output Tags 3rd Level v2': 'Tag_3',
+        'Chat Missed': 'Chat_Missed', 'Description': 'Description', 'Group name support': 'Group_Name'
     }
     
-    df = standard_clean(df, mapping)
+    existing_mapping = {k: v for k, v in mapping.items() if k in df.columns}
+    df = df[list(existing_mapping.keys())].rename(columns=existing_mapping)
+    
+    for c in ['NPS_Score', 'CSAT_Pct', 'FRT_Hours', 'FuRT_Hours', 'Reopen_Count']:
+        if c in df.columns: df[c] = df[c].apply(parse_num)
     
     if 'Audience' in df.columns:
         df['Audience'] = df['Audience'].replace({'Private': 'Rider', 'C4B': 'B2B', 'Driver': 'Driver'})
@@ -79,13 +75,12 @@ def load_main_data(filepath):
 def load_airport_data(filepath):
     df = pd.read_csv(filepath, delimiter=';', low_memory=False)
     if 'Fecha de Referencia' not in df.columns:
-        filepath.seek(0)
+        _ = filepath.seek(0)
         df = pd.read_csv(filepath, delimiter=',', low_memory=False)
         
     df.columns = df.columns.str.strip()
     df = df.loc[:, ~df.columns.duplicated()] 
     
-    # Aeropuerto no trae Contact Type, lo deducimos de las flags booleanas
     def determine_type(row):
         if row.get('# Tickets - Call', 0) == 1: return 'Call'
         if row.get('# Tickets - Chats', 0) == 1: return 'Chat'
@@ -93,24 +88,20 @@ def load_airport_data(filepath):
     df['Contact Type'] = df.apply(determine_type, axis=1)
     df['Audience'] = 'Aeropuerto'
     
-    # Mapeo exacto estudiado de la base Aeropuerto
     mapping = {
-        'Fecha de Referencia': 'Date_Time',
-        'Audience': 'Audience',
-        'Contact Type': 'Contact Type',
-        'NPS Score': 'NPS_Score',
-        '% CSAT': 'CSAT_Pct',
-        '# First Reply Time (Hours)': 'FRT_Hours',
-        '# Full Resolution Time (Hours)': 'FuRT_Hours',
-        '# Tickets Reopen': 'Reopen_Count',  # <- Aquí estaba el truco de los reopens del aeropuerto
-        'ES Output Tags 2nd Level v2': 'Tag_2',
-        'ES Output Tags 3rd Level v2': 'Tag_3',
-        'Chat Missed': 'Chat_Missed',
-        'Description': 'Description',
-        'Group name support': 'Group_Name'
+        'Fecha de Referencia': 'Date_Time', 'Audience': 'Audience', 'Contact Type': 'Contact Type',
+        'NPS Score': 'NPS_Score', '% CSAT': 'CSAT_Pct', '# First Reply Time (Hours)': 'FRT_Hours',
+        '# Full Resolution Time (Hours)': 'FuRT_Hours', '# Tickets Reopen': 'Reopen_Count',
+        'ES Output Tags 2nd Level v2': 'Tag_2', 'ES Output Tags 3rd Level v2': 'Tag_3',
+        'Chat Missed': 'Chat_Missed', 'Description': 'Description', 'Group name support': 'Group_Name'
     }
     
-    df = standard_clean(df, mapping)
+    existing_mapping = {k: v for k, v in mapping.items() if k in df.columns}
+    df = df[list(existing_mapping.keys())].rename(columns=existing_mapping)
+    
+    for c in ['NPS_Score', 'CSAT_Pct', 'FRT_Hours', 'FuRT_Hours', 'Reopen_Count']:
+        if c in df.columns: df[c] = df[c].apply(parse_num)
+        
     df['Date_Time'] = pd.to_datetime(df['Date_Time'], format='%d/%m/%Y', errors='coerce')
     return df
 
@@ -118,7 +109,6 @@ def load_airport_data(filepath):
 @st.cache_data
 def aggregate_weekly(df):
     df['Week'] = df['Date_Time'].dt.isocalendar().week
-    
     def aggs(grp):
         res = {}
         res['Contactos Recibidos'] = len(grp)
@@ -130,7 +120,6 @@ def aggregate_weekly(df):
         
         csat = grp['CSAT_Pct'].mean() if 'CSAT_Pct' in grp.columns else np.nan
         res['CSAT (%)'] = csat * 100 if pd.notna(csat) and csat <= 1.0 else csat
-            
         res['TMO (Hrs)'] = grp['FuRT_Hours'].mean() if 'FuRT_Hours' in grp.columns else np.nan
         
         valid_res = grp['FuRT_Hours'].dropna() if 'FuRT_Hours' in grp.columns else pd.Series()
@@ -151,11 +140,10 @@ def aggregate_weekly(df):
         if len(chats) > 0 and 'Chat_Missed' in grp.columns:
             res['% Chats Atendidos'] = ((len(chats) - chats['Chat_Missed'].sum()) / len(chats)) * 100
         else: res['% Chats Atendidos'] = np.nan
-            
         return pd.Series(res)
     return df.groupby(['Week', 'Audience']).apply(aggs).reset_index()
 
-# --- FUNCIÓN GENERADORA DE PDF ---
+# --- FUNCIÓN GENERADORA DE PDF CON GRÁFICOS VISUALES ---
 def generar_pdf_resumen(df_metrics, df_raw, week):
     pdf = FPDF()
     pdf.add_page()
@@ -215,10 +203,48 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
             print_metric_line("FiRT <24h", f"{curr['FiRT <24h (%)']:.1f}%", firt_diff, is_higher_better=True, is_pct=True)
             print_metric_line("Ratio Reopen", f"{curr['Ratio Reopen/Tickets (%)']:.1f}%", reop_diff, is_higher_better=False, is_pct=True)
 
+            # Inserta un Gráfico Generado en Vivo para el PDF
+            df_trend = df_metrics[df_metrics['Audience'] == aud].sort_values('Week')
+            if len(df_trend) > 1:
+                img_path = f"trend_{aud}.png"
+                try:
+                    fig, ax1 = plt.subplots(figsize=(7, 2.5))
+                    fig.patch.set_facecolor('white')
+                    ax1.set_facecolor('white')
+                    
+                    # Eje Volumen (Barras Lila)
+                    ax1.bar(df_trend['Week'].astype(str), df_trend['Contactos Recibidos'], color='#E2D9FF', label='Volumen')
+                    ax1.set_ylabel('Contactos', color='#7352FF', fontweight='bold')
+                    ax1.tick_params(axis='y', labelcolor='#7352FF')
+                    
+                    # Eje NPS (Línea Verde)
+                    ax2 = ax1.twinx()
+                    ax2.plot(df_trend['Week'].astype(str), df_trend['NPS'], color='#00D1A3', marker='o', linewidth=2, label='NPS')
+                    ax2.set_ylabel('NPS', color='#00D1A3', fontweight='bold')
+                    ax2.tick_params(axis='y', labelcolor='#00D1A3')
+                    ax2.set_ylim([-100, 100])
+                    
+                    plt.title(f"Evolución {aud} (Volumen vs NPS)", color='#333333', fontweight='bold')
+                    ax1.spines['top'].set_visible(False)
+                    ax2.spines['top'].set_visible(False)
+                    plt.tight_layout()
+                    plt.savefig(img_path, dpi=150)
+                    plt.close(fig)
+                    
+                    # Cuidamos que no se corte la página
+                    if pdf.get_y() > 210: pdf.add_page()
+                    pdf.ln(2)
+                    pdf.image(img_path, x=20, w=170)
+                    os.remove(img_path)
+                except Exception as e:
+                    pass
+
+            # Alerta Detractores
             if curr['NPS'] < 0:
                 df_raw['Week_Temp'] = df_raw['Date_Time'].dt.isocalendar().week
                 detractores = df_raw[(df_raw['Audience'] == aud) & (df_raw['Week_Temp'] == week) & (df_raw['NPS_Score'] == -100)]
                 if not detractores.empty and 'Tag_3' in detractores.columns:
+                    if pdf.get_y() > 240: pdf.add_page()
                     pdf.ln(2)
                     pdf.set_font("Arial", 'B', 9)
                     pdf.set_text_color(255, 82, 82)
@@ -239,8 +265,8 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
                             pdf.set_text_color(120, 120, 120)
                             pdf.multi_cell(0, 4, clean_txt(f"      Ej. real: '{desc_text}'"))
 
-            pdf.ln(5)
-            pdf.set_draw_color(200, 200, 200)
+            pdf.ln(7)
+            pdf.set_draw_color(220, 220, 220)
             pdf.line(10, pdf.get_y(), 200, pdf.get_y())
             pdf.ln(3)
 
@@ -261,7 +287,6 @@ if file_main is not None and file_airport is not None:
         df_main = load_main_data(file_main)
         df_airport = load_airport_data(file_airport)
         
-        # Concatena bases ya estandarizadas
         df_raw = pd.concat([df_main, df_airport], ignore_index=True)
         df_metrics = aggregate_weekly(df_raw)
     
@@ -279,11 +304,13 @@ if file_main is not None and file_airport is not None:
     # EXPORTAR RESUMEN EJECUTIVO EN PDF
     st.sidebar.divider()
     st.sidebar.subheader("📄 Reporte Directivo (PDF)")
-    st.sidebar.caption("Descarga el resumen de todas las audiencias con código de color y análisis de NPS automático.")
-    pdf_bytes = generar_pdf_resumen(df_metrics, df_raw, selected_week)
-    st.sidebar.download_button(
+    st.sidebar.caption("Descarga el resumen de todas las audiencias con código de color, gráficos evolutivos y análisis de NPS automático.")
+    
+    # Asignamos a una variable inofensiva para evitar "Nones" de Streamlit Magic
+    _pdf_bytes = generar_pdf_resumen(df_metrics, df_raw, selected_week)
+    _ = st.sidebar.download_button(
         label="Descargar Executive Summary (.pdf)",
-        data=pdf_bytes,
+        data=_pdf_bytes,
         file_name=f"COPS_Executive_Summary_W{selected_week}.pdf",
         mime="application/pdf"
     )
@@ -302,7 +329,7 @@ if file_main is not None and file_airport is not None:
                     df_aud = df_valid_nps[df_valid_nps['Audience'] == aud]
                     if not df_aud.empty:
                         _ = df_aud.to_excel(writer, sheet_name=aud, index=False)
-            st.sidebar.download_button(
+            _ = st.sidebar.download_button(
                 label="Descargar Reporte NPS (.xlsx)",
                 data=output.getvalue(),
                 file_name="Reporte_NPS_Valido_Cabify.xlsx",
@@ -366,7 +393,7 @@ if file_main is not None and file_airport is not None:
             else: 
                 with c2: st.metric("% Chats Atendidos", "S/D")
 
-            # --- GRÁFICOS DE TENDENCIA (SUAVIZADOS) ---
+            # --- GRÁFICOS DE TENDENCIA SUAVIZADOS ---
             st.divider()
             st.markdown("#### 📈 Evolución Histórica")
             col_g1, col_g2 = st.columns(2)
@@ -376,14 +403,14 @@ if file_main is not None and file_airport is not None:
                                   title="Volumen de Contactos", color_discrete_sequence=[CABIFY_PURPLE])
                 _ = fig_vol.update_layout(plot_bgcolor="white", xaxis_title="Semana", yaxis_title="Contactos")
                 _ = fig_vol.update_yaxes(rangemode="tozero") 
-                st.plotly_chart(fig_vol, use_container_width=True)
+                _ = st.plotly_chart(fig_vol, use_container_width=True)
                 
             with col_g2:
                 fig_nps = px.line(df_filtered, x='Week', y=['NPS', 'CSAT (%)'], markers=True,
                                   title="Experiencia y Calidad", color_discrete_sequence=[CABIFY_PURPLE, CABIFY_SECONDARY])
                 _ = fig_nps.update_layout(plot_bgcolor="white", xaxis_title="Semana", yaxis_title="Score / %")
                 _ = fig_nps.update_yaxes(range=[-100, 100])
-                st.plotly_chart(fig_nps, use_container_width=True)
+                _ = st.plotly_chart(fig_nps, use_container_width=True)
 
     with tab2:
         st.markdown(f"### 🔍 Deep Dive: Motivos de Contacto Nivel 3 ({selected_audience} - Sem {selected_week})")
@@ -398,9 +425,9 @@ if file_main is not None and file_airport is not None:
             fig_tags = px.bar(top_tags, x='Volumen', y='Motivo (Tag 3er Nivel)', orientation='h',
                               color_discrete_sequence=[CABIFY_SECONDARY])
             _ = fig_tags.update_layout(yaxis={'categoryorder':'total ascending'}, plot_bgcolor="white")
-            st.plotly_chart(fig_tags, use_container_width=True)
+            _ = st.plotly_chart(fig_tags, use_container_width=True)
             
             st.markdown("#### Ejemplos Reales (Descripción del Usuario)")
             if 'Description' in df_raw_filtered.columns:
                 sample_desc = df_raw_filtered[['Tag_3', 'Description']].dropna().sample(n=min(10, len(df_raw_filtered)))
-                st.dataframe(sample_desc, use_container_width=True)
+                _ = st.dataframe(sample_desc, use_container_width=True)
