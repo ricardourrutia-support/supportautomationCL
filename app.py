@@ -10,7 +10,7 @@ st.set_page_config(page_title="Cabify Support Dashboard", layout="wide", initial
 CABIFY_PURPLE = "#7352FF"
 CABIFY_SECONDARY = "#00D1A3"
 
-# Definimos las columnas clave que necesita la app para funcionar
+# Definimos las columnas clave que necesita la app para funcionar (para desechar la basura)
 CORE_COLUMNS = [
     'Date_Time', 'Audience', 'Contact Type', 'NPS Score', '% CSAT', 
     '# First Reply Time (Hours)', '# Full Resolution Time (Hours)', 
@@ -29,13 +29,13 @@ def parse_num(s):
 # --- CARGA DEL REPORTE GENERAL ---
 @st.cache_data
 def load_main_data(filepath):
-    df = pd.read_csv(filepath, delimiter=';')
+    df = pd.read_csv(filepath, delimiter=';', low_memory=False)
     if 'Date_Time' not in df.columns:
         filepath.seek(0)
-        df = pd.read_csv(filepath, delimiter=',')
+        df = pd.read_csv(filepath, delimiter=',', low_memory=False)
         
     df.columns = df.columns.str.strip()
-    df = df.loc[:, ~df.columns.duplicated()]
+    df = df.loc[:, ~df.columns.duplicated()] # Vacuna antiduplicados inicial
     
     df['Audience'] = df['Audience'].replace({'Private': 'Rider', 'C4B': 'B2B', 'Driver': 'Driver'})
     df = df[df['Audience'].isin(['Rider', 'B2B', 'Driver'])]
@@ -54,9 +54,11 @@ def load_main_data(filepath):
             df[matched_col] = df[matched_col].apply(parse_num)
             df = df.rename(columns={matched_col: col})
             
-    # Mantenemos solo las columnas Core si existen en el DF
+    # Vacuna antiduplicados final (por si el rename creó clones)
+    df = df.loc[:, ~df.columns.duplicated()]
+    
     final_cols = [c for c in CORE_COLUMNS if c in df.columns]
-    return df[final_cols]
+    return df[final_cols].copy()
 
 # --- CARGA DEL REPORTE AEROPUERTO ---
 @st.cache_data
@@ -67,7 +69,7 @@ def load_airport_data(filepath):
         df = pd.read_csv(filepath, delimiter=',', low_memory=False)
         
     df.columns = df.columns.str.strip()
-    df = df.loc[:, ~df.columns.duplicated()]
+    df = df.loc[:, ~df.columns.duplicated()] # Vacuna antiduplicados inicial
     
     df['Audience'] = 'Aeropuerto'
     df['Date_Time'] = pd.to_datetime(df['Fecha de Referencia'], format='%d/%m/%Y', errors='coerce')
@@ -92,8 +94,11 @@ def load_airport_data(filepath):
             df[matched_col] = df[matched_col].apply(parse_num)
             df = df.rename(columns={matched_col: new_col})
             
+    # Vacuna antiduplicados final (por si el rename creó clones)
+    df = df.loc[:, ~df.columns.duplicated()]
+    
     final_cols = [c for c in CORE_COLUMNS if c in df.columns]
-    return df[final_cols]
+    return df[final_cols].copy()
 
 @st.cache_data
 def aggregate_weekly(df):
@@ -207,7 +212,6 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
             print_metric_line("Ratio Reopen", f"{curr['Ratio Reopen/Tickets (%)']:.1f}%", reop_diff, is_higher_better=False, is_pct=True)
 
             if curr['NPS'] < 0:
-                # Calculamos la semana cruda y filtramos
                 df_raw['Week_Temp'] = df_raw['Date_Time'].dt.isocalendar().week
                 detractores = df_raw[(df_raw['Audience'] == aud) & (df_raw['Week_Temp'] == week) & (df_raw['NPS Score'] == -100)]
                 if not detractores.empty and 'ES Output Tags 3rd Level v2' in detractores.columns:
@@ -249,11 +253,14 @@ with c_up2:
     file_airport = st.file_uploader("2. Archivo Aeropuerto (Firt Datos)", type=['csv'])
 
 if file_main is not None and file_airport is not None:
-    with st.spinner('Procesando y fusionando archivos...'):
+    with st.spinner('Procesando y fusionando archivos de forma segura...'):
         df_main = load_main_data(file_main)
         df_airport = load_airport_data(file_airport)
         
-        # Concatena de forma segura usando solo las columnas CORE
+        # LA SOLUCIÓN DEFINITIVA: Limpieza extrema antes del concat
+        df_main = df_main.loc[:, ~df_main.columns.duplicated()]
+        df_airport = df_airport.loc[:, ~df_airport.columns.duplicated()]
+        
         df_raw = pd.concat([df_main, df_airport], ignore_index=True, join='outer')
         df_metrics = aggregate_weekly(df_raw)
     
