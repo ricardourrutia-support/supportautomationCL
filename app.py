@@ -18,7 +18,7 @@ CABIFY_SECONDARY = "#00D1A3"
 CORE_COLUMNS = [
     'Date_Time', 'Audience', 'Contact Type', 'NPS_Score', 'CSAT_Pct', 
     'FRT_Hours', 'FuRT_Hours', 'Reopen_Count', 'Tag_1', 'Tag_2', 
-    'Tag_3', 'Chat_Missed', 'Description', 'Group_Name', 'Include_Contacts'
+    'Tag_3', 'Chat_Missed', 'Description', 'Group_Name', 'Include_Contacts', 'Service_Type'
 ]
 
 # --- LECTOR ROBUSTO DE CSV ---
@@ -57,7 +57,7 @@ def standard_clean(df, mapping):
         if c in df.columns: df[c] = df[c].apply(parse_num)
     return df
 
-# --- CARGA DEL REPORTE MAESTRO (Nuevas Reglas de Negocio) ---
+# --- CARGA DEL REPORTE MAESTRO (Un Solo Archivo) ---
 @st.cache_data
 def load_main_data(filepath):
     df = read_csv_robust(filepath)
@@ -74,49 +74,44 @@ def load_main_data(filepath):
     }
     df = standard_clean(df, mapping)
     
-    # 1. Filtro General: Include Contacts y Service Type
+    # 1. Filtro General: Solo "Rest" y Excluir "Delivery"
     if 'Include_Contacts' in df.columns:
         df = df[df['Include_Contacts'].astype(str).str.strip().str.lower() == 'rest']
     if 'Service_Type' in df.columns:
         df = df[~df['Service_Type'].astype(str).str.lower().str.contains('delivery', na=False)]
         
-    # 2. Asignación y Limpieza de Audiencias por Group Name
+    # 2. Asignación Estricta de Audiencias
     if 'Audience' in df.columns and 'Group_Name' in df.columns:
         df['Audience'] = df['Audience'].replace({'Private': 'Rider', 'C4B': 'B2B', 'Driver': 'Driver'})
+        gn = df['Group_Name'].astype(str).str.strip().str.lower()
         
-        gn = df['Group_Name'].astype(str).str.strip()
-        gn_lower = gn.str.lower()
+        # B2B
+        valid_b2b = ['cl b2b atencion', 'cl b2b atención', 'tn b2b atencion', 'tn b2b atención', 'auto answer', 'autoanswer']
+        mask_b2b = (df['Audience'] == 'B2B') & gn.isin(valid_b2b)
         
-        # Regla B2B
-        mask_b2b_base = df['Audience'] == 'B2B'
-        valid_b2b = ['[cl] b2b atención', '[tn] b2b atención', '[autoanswer]']
-        mask_b2b_valid = mask_b2b_base & gn_lower.isin(valid_b2b)
+        # Rider / Driver
+        invalid_rd = gn.str.contains('admin|fraude|applicants support', regex=True, na=False)
+        invalid_starts = gn.str.startswith(('global', 'co ', 'pe ', 'uy ', 'ar ', 'es ', 'cex '))
+        invalid_null = gn.isin(['null', 'nan', '', 'none'])
+        mask_rd = df['Audience'].isin(['Rider', 'Driver']) & ~invalid_rd & ~invalid_starts & ~invalid_null
         
-        # Regla Rider / Driver
-        mask_rd_base = df['Audience'].isin(['Rider', 'Driver'])
-        invalid_contains = gn_lower.str.contains('admin|\[tn\] fraude|applicants support', regex=True)
-        invalid_starts = gn_lower.str.startswith(('[global]', '[co]', '[pe]', '[uy]', '[ar]', '[es]', '[cex]'))
-        invalid_null = gn_lower.isin(['null', 'nan', ''])
-        mask_rd_valid = mask_rd_base & ~invalid_contains & ~invalid_starts & ~invalid_null
+        # Emergencias (Incluye la variante Energencias)
+        valid_em = ['tn emergencias drivers', 'tn energencias drivers', 
+                    'tn emergencias rider', 'tn energencias rider',
+                    'tn emergencias', 'tn energencias']
+        mask_em = gn.isin(valid_em)
         
-        # Regla Emergencias
-        valid_em = [
-            '[tn] emergencias drivers', '[tn] energencias drivers', 
-            '[tn] emergencias rider', '[tn] energencias rider',
-            '[tn] emergencias', '[tn] energencias'
-        ]
-        mask_em = gn_lower.isin(valid_em)
+        # Aeropuerto
+        mask_aero = (gn == 'cl aeropuerto local')
         
-        # Regla Aeropuerto
-        mask_aero = gn_lower == '[cl] aeropuerto local'
-        
-        # Aplicamos la nueva clasificación
+        # Reescribimos la Audiencia Final
         df['Final_Audience'] = np.nan
-        df.loc[mask_rd_valid, 'Final_Audience'] = df.loc[mask_rd_valid, 'Audience']
-        df.loc[mask_b2b_valid, 'Final_Audience'] = 'B2B'
+        df.loc[mask_rd, 'Final_Audience'] = df.loc[mask_rd, 'Audience']
+        df.loc[mask_b2b, 'Final_Audience'] = 'B2B'
         df.loc[mask_em, 'Final_Audience'] = 'Emergencias'
         df.loc[mask_aero, 'Final_Audience'] = 'Aeropuerto'
         
+        # Desechamos toda la basura que no cayó en ninguna de las 5 categorías
         df = df.dropna(subset=['Final_Audience'])
         df['Audience'] = df['Final_Audience']
         
@@ -350,14 +345,14 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
 
     return pdf.output(dest='S').encode('latin-1')
 
-# --- INTERFAZ PRINCIPAL ---
+# --- INTERFAZ ---
 st.markdown(f"<h1 style='color: {CABIFY_PURPLE};'>🚕 C_OPS Support Dashboard</h1>", unsafe_allow_html=True)
-st.write("Sube el archivo general para procesar todas las audiencias (incluyendo Aeropuerto y Emergencias).")
+st.write("Sube el Archivo Maestro (CSV) para consolidar todas las audiencias bajo las reglas del negocio.")
 
-file_main = st.file_uploader("Archivo Maestro (CSV)", type=['csv'])
+file_main = st.file_uploader("Subir Archivo de Datos", type=['csv'])
 
 if file_main is not None:
-    with st.spinner('Aplicando reglas de negocio exclusivas, limpiando y analizando datos...'):
+    with st.spinner('Aplicando filtros, estandarizando y analizando audiencias (B2B, Emergencias, Aeropuerto)...'):
         df_raw = load_main_data(file_main)
         df_raw['Week'] = df_raw['Date_Time'].dt.isocalendar().week
         df_metrics = aggregate_weekly(df_raw)
@@ -372,7 +367,6 @@ if file_main is not None:
     available_weeks = sorted(df_filtered['Week'].dropna().unique(), reverse=True)
     selected_week = st.sidebar.selectbox("Selecciona la Semana a visualizar", available_weeks, index=0)
     
-    # EXPORTAR RESUMEN EJECUTIVO EN PDF
     st.sidebar.divider()
     st.sidebar.subheader("📄 Reporte Directivo (PDF)")
     st.sidebar.caption("Descarga el resumen con gráficos evolutivos y análisis de detractores.")
@@ -385,7 +379,6 @@ if file_main is not None:
         mime="application/pdf"
     )
 
-    # EXPORTAR EXCEL NPS VÁLIDO
     st.sidebar.divider()
     st.sidebar.subheader("📥 Exportar Datos Crudos")
     
@@ -409,7 +402,7 @@ if file_main is not None:
     
     with tab1:
         st.markdown("### 💬 Copiar Resumen para Slack")
-        st.info("Pasa el mouse sobre la caja de abajo y haz clic en el ícono de copiar para pegarlo directamente en Slack.")
+        st.info("Pasa el mouse sobre la caja de abajo y haz clic en el ícono de copiar para pegarlo en Slack.")
         slack_msg = generar_texto_slack(df_metrics, selected_week)
         st.code(slack_msg, language="markdown")
         st.divider()
