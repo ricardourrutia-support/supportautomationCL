@@ -57,7 +57,7 @@ def standard_clean(df, mapping):
         if c in df.columns: df[c] = df[c].apply(parse_num)
     return df
 
-# --- CARGA DEL REPORTE MAESTRO (Un Solo Archivo) ---
+# --- CARGA DEL REPORTE MAESTRO ---
 @st.cache_data
 def load_main_data(filepath):
     df = read_csv_robust(filepath)
@@ -74,13 +74,11 @@ def load_main_data(filepath):
     }
     df = standard_clean(df, mapping)
     
-    # 1. Filtro General: Solo "Rest" y Excluir "Delivery"
     if 'Include_Contacts' in df.columns:
         df = df[df['Include_Contacts'].astype(str).str.strip().str.lower() == 'rest']
     if 'Service_Type' in df.columns:
         df = df[~df['Service_Type'].astype(str).str.lower().str.contains('delivery', na=False)]
         
-    # 2. Asignación Estricta de Audiencias
     if 'Audience' in df.columns and 'Group_Name' in df.columns:
         df['Audience'] = df['Audience'].replace({'Private': 'Rider', 'C4B': 'B2B', 'Driver': 'Driver'})
         gn = df['Group_Name'].astype(str).str.strip().str.lower()
@@ -127,10 +125,9 @@ def aggregate_weekly(df):
         res['Contactos Chat'] = len(grp[grp['Contact Type'] == 'Chat'])
         res['Contactos Call'] = len(grp[grp['Contact Type'] == 'Call'])
         
-        # NPS Promedio y Cantidad de Encuestas
         if 'NPS_Score' in grp.columns:
             res['NPS'] = grp['NPS_Score'].mean()
-            res['NPS_Count'] = grp['NPS_Score'].count() # Nueva métrica
+            res['NPS_Count'] = grp['NPS_Score'].count()
         else: 
             res['NPS'] = np.nan
             res['NPS_Count'] = 0
@@ -189,7 +186,7 @@ def analizar_detractores(df_raw, aud, week):
         
     return resumen
 
-# --- FUNCIÓN GENERADORA DE TEXTO SLACK ---
+# --- TEXTO SLACK ---
 def generar_texto_slack(df_metrics, week):
     lines = []
     lines.append(f"📣 C_OPS Weekly Update - Support - Semana {week} 📣\n")
@@ -228,7 +225,6 @@ def generar_texto_slack(df_metrics, week):
         lines.append(f"{icon} {aud.upper()}")
         lines.append(f"• Volumen: {vol_curr:,.0f} ({vol_wow:+.1f}% WoW)")
         
-        # Agregamos la cantidad de encuestas y quitamos los asteriscos
         nps_str = f"{nps_curr:.1f} ({nps_wow:+.1f}) | {int(nps_count)} encuestas" if pd.notna(nps_curr) else "S/D"
         csat_str = f"{csat_curr:.1f}% ({csat_wow:+.1f}%)" if pd.notna(csat_curr) else "S/D"
         lines.append(f"• Calidad: NPS {nps_str} | CSAT {csat_str}")
@@ -239,11 +235,10 @@ def generar_texto_slack(df_metrics, week):
 
     return "\n".join(lines)
 
-# --- FUNCIÓN GENERADORA DE PDF ---
+# --- PDF 1: RESUMEN DOCUMENTO (Vertical) ---
 def generar_pdf_resumen(df_metrics, df_raw, week):
     pdf = FPDF()
     pdf.add_page()
-    
     def clean_txt(text):
         if pd.isna(text): return ""
         text = str(text).replace('"', "'").replace('\n', ' ')
@@ -252,7 +247,7 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
     def print_metric_line(label, val_str, delta_val, is_higher_better=True, is_pct=False):
         pdf.set_font("Arial", '', 10)
         pdf.set_text_color(0, 0, 0)
-        pdf.cell(55, 6, clean_txt(f"- {label}: {val_str}"), ln=0) # Ampliamos un poco el margen para que quepa el texto
+        pdf.cell(55, 6, clean_txt(f"- {label}: {val_str}"), ln=0)
         
         if pd.isna(delta_val) or delta_val == 0:
             pdf.set_text_color(150, 150, 150)
@@ -334,7 +329,7 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
             
             if "Excelente" in insight_nps:
                 pdf.set_font("Arial", 'I', 9)
-                pdf.set_text_color(0, 209, 163) # Verde
+                pdf.set_text_color(0, 209, 163)
                 pdf.multi_cell(0, 5, clean_txt(insight_nps))
             else:
                 pdf.set_font("Arial", 'B', 9)
@@ -348,6 +343,147 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
             pdf.set_draw_color(220, 220, 220)
             pdf.line(10, pdf.get_y(), 200, pdf.get_y())
             pdf.ln(3)
+    return pdf.output(dest='S').encode('latin-1')
+
+# --- PDF 2: PRESENTACIÓN (Horizontal/Diapositivas) ---
+def generar_pdf_presentacion(df_metrics, df_raw, week):
+    # Formato L (Landscape/Horizontal)
+    pdf = FPDF(orientation='L', unit='mm', format='A4')
+    
+    def clean_txt(text):
+        if pd.isna(text): return ""
+        text = str(text).replace('"', "'").replace('\n', ' ')
+        return text.encode('latin-1', 'replace').decode('latin-1')
+        
+    def add_header(title):
+        pdf.set_fill_color(115, 82, 255) # Morado Cabify
+        pdf.rect(0, 0, 297, 25, 'F')
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_y(8)
+        pdf.set_x(10)
+        pdf.set_font("Arial", 'B', 18)
+        pdf.cell(0, 10, clean_txt(title), ln=True)
+        pdf.set_y(35)
+        
+    # Diapositiva 1: Portada
+    pdf.add_page()
+    pdf.set_y(80)
+    pdf.set_font("Arial", 'B', 32)
+    pdf.set_text_color(115, 82, 255)
+    pdf.cell(0, 15, clean_txt("C_OPS Support Dashboard"), align='C', ln=True)
+    pdf.set_font("Arial", '', 20)
+    pdf.set_text_color(80, 80, 80)
+    pdf.cell(0, 10, clean_txt(f"Resumen Directivo - Semana {week}"), align='C', ln=True)
+    
+    audiences_in_week = df_metrics[df_metrics['Week'] == week]['Audience'].unique()
+    conclusiones = []
+    
+    for aud in ['Driver', 'Rider', 'B2B', 'Emergencias', 'Aeropuerto']:
+        if aud not in audiences_in_week: continue
+        
+        curr_df = df_metrics[(df_metrics['Audience'] == aud) & (df_metrics['Week'] == week)]
+        prev_df = df_metrics[(df_metrics['Audience'] == aud) & (df_metrics['Week'] == week - 1)]
+
+        if not curr_df.empty:
+            pdf.add_page()
+            add_header(f"Performance Operativo: {aud.upper()}")
+            
+            curr = curr_df.iloc[0]
+            prev = prev_df.iloc[0] if not prev_df.empty else curr * 0
+
+            # Cálculos
+            vol_pct = ((curr['Contactos Recibidos'] - prev['Contactos Recibidos']) / prev['Contactos Recibidos'] * 100) if prev['Contactos Recibidos'] else 0
+            nps_diff = curr['NPS'] - prev['NPS']
+            csat_diff = curr['CSAT (%)'] - prev['CSAT (%)']
+            firt_diff = curr['FiRT <24h (%)'] - prev['FiRT <24h (%)']
+            reop_diff = curr['Ratio Reopen/Tickets (%)'] - prev['Ratio Reopen/Tickets (%)']
+            
+            # --- DIBUJAR TABLA DE MÉTRICAS (Lado Izquierdo) ---
+            pdf.set_x(15)
+            pdf.set_font("Arial", 'B', 12)
+            pdf.set_fill_color(115, 82, 255)
+            pdf.set_text_color(255, 255, 255)
+            pdf.cell(50, 10, "Metrica", 1, 0, 'C', 1)
+            pdf.cell(40, 10, "Semana Actual", 1, 0, 'C', 1)
+            pdf.cell(30, 10, "WoW", 1, 1, 'C', 1)
+            
+            metrics_data = [
+                ("Volumen", f"{curr['Contactos Recibidos']:,.0f}", f"{vol_pct:+.1f}%", False),
+                ("NPS Score", f"{curr['NPS']:.1f}", f"{nps_diff:+.1f}", True),
+                ("CSAT", f"{curr['CSAT (%)']:.1f}%", f"{csat_diff:+.1f}%", True),
+                ("SLA 1ra Rsp.", f"{curr['FiRT <24h (%)']:.1f}%", f"{firt_diff:+.1f}%", True),
+                ("Ratio Reopen", f"{curr['Ratio Reopen/Tickets (%)']:.1f}%", f"{reop_diff:+.1f}%", False)
+            ]
+            
+            pdf.set_font("Arial", '', 11)
+            for m_name, val, wow, is_higher_better in metrics_data:
+                pdf.set_x(15)
+                pdf.set_text_color(80, 80, 80)
+                pdf.cell(50, 10, clean_txt(m_name), 1, 0, 'L')
+                pdf.cell(40, 10, clean_txt(val), 1, 0, 'C')
+                
+                # Lógica de Color WoW
+                if "nan" in wow.lower() or "s/d" in wow.lower() or "+0.0" in wow:
+                    pdf.set_text_color(150, 150, 150)
+                else:
+                    is_positive = "+" in wow
+                    if is_positive:
+                        pdf.set_text_color(0, 209, 163) if is_higher_better else pdf.set_text_color(255, 82, 82)
+                    else:
+                        pdf.set_text_color(255, 82, 82) if is_higher_better else pdf.set_text_color(0, 209, 163)
+                
+                pdf.cell(30, 10, clean_txt(wow), 1, 1, 'C')
+
+            # --- DIBUJAR GRÁFICO (Lado Derecho) ---
+            df_trend = df_metrics[df_metrics['Audience'] == aud].sort_values('Week')
+            if len(df_trend) > 1:
+                img_path = f"pres_trend_{aud}.png"
+                try:
+                    fig, ax1 = plt.subplots(figsize=(8, 4))
+                    fig.patch.set_facecolor('white')
+                    ax1.set_facecolor('white')
+                    ax1.bar(df_trend['Week'].astype(str), df_trend['Contactos Recibidos'], color='#E2D9FF', label='Volumen')
+                    ax1.set_ylabel('Contactos', color='#7352FF', fontweight='bold')
+                    ax1.tick_params(axis='y', labelcolor='#7352FF')
+                    ax2 = ax1.twinx()
+                    ax2.plot(df_trend['Week'].astype(str), df_trend['NPS'], color='#00D1A3', marker='o', linewidth=3, label='NPS')
+                    ax2.set_ylabel('NPS', color='#00D1A3', fontweight='bold')
+                    ax2.tick_params(axis='y', labelcolor='#00D1A3')
+                    ax2.set_ylim([-100, 100])
+                    plt.title("Evolucion Volumen vs NPS", color='#333333', fontweight='bold')
+                    ax1.spines['top'].set_visible(False)
+                    ax2.spines['top'].set_visible(False)
+                    plt.tight_layout()
+                    plt.savefig(img_path, dpi=150)
+                    plt.close(fig)
+                    
+                    pdf.image(img_path, x=140, y=35, w=145)
+                    os.remove(img_path)
+                except Exception: pass
+            
+            # Guardamos insights para la diapositiva final
+            insight = analizar_detractores(df_raw, aud, week)
+            conclusiones.append((aud, insight))
+
+    # Diapositiva Final: Conclusiones
+    pdf.add_page()
+    add_header("Conclusiones y Voz del Cliente (Detractores)")
+    
+    for aud, insight in conclusiones:
+        pdf.set_x(15)
+        pdf.set_font("Arial", 'B', 12)
+        pdf.set_text_color(115, 82, 255)
+        pdf.cell(0, 6, clean_txt(f"{aud.upper()}:"), ln=True)
+        
+        pdf.set_x(15)
+        pdf.set_font("Arial", '', 10)
+        if "Excelente" in insight:
+            pdf.set_text_color(0, 209, 163)
+        else:
+            pdf.set_text_color(80, 80, 80)
+            
+        pdf.multi_cell(260, 5, clean_txt(insight))
+        pdf.ln(4)
 
     return pdf.output(dest='S').encode('latin-1')
 
@@ -373,20 +509,30 @@ if file_main is not None:
     available_weeks = sorted(df_filtered['Week'].dropna().unique(), reverse=True)
     selected_week = st.sidebar.selectbox("Selecciona la Semana a visualizar", available_weeks, index=0)
     
-    # EXPORTAR RESUMEN EJECUTIVO EN PDF
+    # PDF DOCUMENTO VERTICAL
     st.sidebar.divider()
-    st.sidebar.subheader("📄 Reporte Directivo (PDF)")
-    st.sidebar.caption("Descarga el resumen con gráficos evolutivos y análisis de detractores.")
+    st.sidebar.subheader("📄 Reportes PDF")
+    st.sidebar.caption("Descarga el documento formal (Vertical).")
     
-    _pdf_bytes = generar_pdf_resumen(df_metrics, df_raw, selected_week)
+    _pdf_resumen = generar_pdf_resumen(df_metrics, df_raw, selected_week)
     _ = st.sidebar.download_button(
-        label=f"Descargar Executive Summary S{selected_week} (.pdf)",
-        data=_pdf_bytes,
+        label=f"📄 Resumen Documento S{selected_week}",
+        data=_pdf_resumen,
         file_name=f"COPS_Executive_Summary_W{selected_week}.pdf",
         mime="application/pdf"
     )
 
-    # EXPORTAR EXCEL NPS VÁLIDO
+    # NUEVO: PDF PRESENTACIÓN HORIZONTAL
+    st.sidebar.caption("Descarga el formato Diapositiva (Horizontal).")
+    _pdf_pres = generar_pdf_presentacion(df_metrics, df_raw, selected_week)
+    _ = st.sidebar.download_button(
+        label=f"📊 Presentacion Slides S{selected_week}",
+        data=_pdf_pres,
+        file_name=f"COPS_Presentacion_W{selected_week}.pdf",
+        mime="application/pdf"
+    )
+
+    # EXCEL DATOS CRUDOS
     st.sidebar.divider()
     st.sidebar.subheader("📥 Exportar Datos Crudos")
     
@@ -412,7 +558,7 @@ if file_main is not None:
     
     with tab1:
         st.markdown("### 💬 Copiar Resumen para Slack")
-        st.info("Pasa el mouse sobre la caja de abajo y haz clic en el ícono de copiar para pegarlo en Slack.")
+        st.info("Pasa el mouse sobre la caja de abajo y haz clic en el ícono de copiar para pegarlo directamente en Slack.")
         slack_msg = generar_texto_slack(df_metrics, selected_week)
         st.code(slack_msg, language="markdown")
         st.divider()
@@ -442,7 +588,6 @@ if file_main is not None:
             with c4: st.metric("Contactos Call", f"{curr['Contactos Call']:,.0f}", calc_delta_pct(curr['Contactos Call'], prev['Contactos Call']), delta_color="inverse")
             
             c5, c6, c7 = st.columns(3)
-            # Globo de ayuda visual (help) con el conteo de NPS
             with c5: st.metric("NPS Score", f"{curr['NPS']:.2f}", calc_delta_abs(curr['NPS'], prev['NPS']), delta_color="normal", help=f"Basado en {int(curr.get('NPS_Count', 0))} encuestas esta semana")
             with c6: st.metric("CSAT", f"{curr['CSAT (%)']:.1f}%", calc_delta_abs(curr['CSAT (%)'], prev['CSAT (%)']) + "%", delta_color="normal")
             
