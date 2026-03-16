@@ -74,44 +74,38 @@ def load_main_data(filepath):
     }
     df = standard_clean(df, mapping)
     
-    # 1. Filtro General: Solo "Rest" y Excluir "Delivery"
+    # Filtro General: Solo "Rest" y Excluir "Delivery"
     if 'Include_Contacts' in df.columns:
         df = df[df['Include_Contacts'].astype(str).str.strip().str.lower() == 'rest']
     if 'Service_Type' in df.columns:
         df = df[~df['Service_Type'].astype(str).str.lower().str.contains('delivery', na=False)]
         
-    # 2. Asignación Estricta de Audiencias
+    # Asignación Estricta de Audiencias
     if 'Audience' in df.columns and 'Group_Name' in df.columns:
         df['Audience'] = df['Audience'].replace({'Private': 'Rider', 'C4B': 'B2B', 'Driver': 'Driver'})
         gn = df['Group_Name'].astype(str).str.strip().str.lower()
         
-        # B2B
         valid_b2b = ['cl b2b atencion', 'cl b2b atención', 'tn b2b atencion', 'tn b2b atención', 'auto answer', 'autoanswer']
         mask_b2b = (df['Audience'] == 'B2B') & gn.isin(valid_b2b)
         
-        # Rider / Driver
         invalid_rd = gn.str.contains('admin|fraude|applicants support', regex=True, na=False)
         invalid_starts = gn.str.startswith(('global', 'co ', 'pe ', 'uy ', 'ar ', 'es ', 'cex '))
         invalid_null = gn.isin(['null', 'nan', '', 'none'])
         mask_rd = df['Audience'].isin(['Rider', 'Driver']) & ~invalid_rd & ~invalid_starts & ~invalid_null
         
-        # Emergencias (Incluye la variante Energencias)
         valid_em = ['tn emergencias drivers', 'tn energencias drivers', 
                     'tn emergencias rider', 'tn energencias rider',
                     'tn emergencias', 'tn energencias']
         mask_em = gn.isin(valid_em)
         
-        # Aeropuerto
         mask_aero = (gn == 'cl aeropuerto local')
         
-        # Reescribimos la Audiencia Final
         df['Final_Audience'] = np.nan
         df.loc[mask_rd, 'Final_Audience'] = df.loc[mask_rd, 'Audience']
         df.loc[mask_b2b, 'Final_Audience'] = 'B2B'
         df.loc[mask_em, 'Final_Audience'] = 'Emergencias'
         df.loc[mask_aero, 'Final_Audience'] = 'Aeropuerto'
         
-        # Desechamos toda la basura que no cayó en ninguna de las 5 categorías
         df = df.dropna(subset=['Final_Audience'])
         df['Audience'] = df['Final_Audience']
         
@@ -345,14 +339,14 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
 
     return pdf.output(dest='S').encode('latin-1')
 
-# --- INTERFAZ ---
+# --- INTERFAZ PRINCIPAL ---
 st.markdown(f"<h1 style='color: {CABIFY_PURPLE};'>🚕 C_OPS Support Dashboard</h1>", unsafe_allow_html=True)
-st.write("Sube el Archivo Maestro (CSV) para consolidar todas las audiencias bajo las reglas del negocio.")
+st.write("Sube el archivo general para procesar todas las audiencias.")
 
-file_main = st.file_uploader("Subir Archivo de Datos", type=['csv'])
+file_main = st.file_uploader("Archivo Maestro (CSV)", type=['csv'])
 
 if file_main is not None:
-    with st.spinner('Aplicando filtros, estandarizando y analizando audiencias (B2B, Emergencias, Aeropuerto)...'):
+    with st.spinner('Aplicando reglas de negocio exclusivas, limpiando y analizando datos...'):
         df_raw = load_main_data(file_main)
         df_raw['Week'] = df_raw['Date_Time'].dt.isocalendar().week
         df_metrics = aggregate_weekly(df_raw)
@@ -367,23 +361,27 @@ if file_main is not None:
     available_weeks = sorted(df_filtered['Week'].dropna().unique(), reverse=True)
     selected_week = st.sidebar.selectbox("Selecciona la Semana a visualizar", available_weeks, index=0)
     
+    # EXPORTAR RESUMEN EJECUTIVO EN PDF
     st.sidebar.divider()
     st.sidebar.subheader("📄 Reporte Directivo (PDF)")
     st.sidebar.caption("Descarga el resumen con gráficos evolutivos y análisis de detractores.")
     
     _pdf_bytes = generar_pdf_resumen(df_metrics, df_raw, selected_week)
     _ = st.sidebar.download_button(
-        label="Descargar Executive Summary (.pdf)",
+        label=f"Descargar Executive Summary S{selected_week} (.pdf)",
         data=_pdf_bytes,
         file_name=f"COPS_Executive_Summary_W{selected_week}.pdf",
         mime="application/pdf"
     )
 
+    # EXPORTAR EXCEL NPS VÁLIDO
     st.sidebar.divider()
     st.sidebar.subheader("📥 Exportar Datos Crudos")
     
     if 'NPS_Score' in df_raw.columns:
-        df_valid_nps = df_raw.dropna(subset=['NPS_Score'])
+        # AQUÍ ESTÁ EL CAMBIO: Filtramos por la semana seleccionada
+        df_valid_nps = df_raw[(df_raw['NPS_Score'].notna()) & (df_raw['Week'] == selected_week)]
+        
         if not df_valid_nps.empty:
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -392,17 +390,19 @@ if file_main is not None:
                     if not df_aud.empty:
                         _ = df_aud.to_excel(writer, sheet_name=aud, index=False)
             _ = st.sidebar.download_button(
-                label="Descargar Reporte NPS (.xlsx)",
+                label=f"Descargar Reporte NPS S{selected_week} (.xlsx)",
                 data=output.getvalue(),
-                file_name="Reporte_NPS_Valido_Cabify.xlsx",
+                file_name=f"Reporte_NPS_Valido_Cabify_S{selected_week}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+        else:
+            st.sidebar.warning(f"No hay encuestas de NPS para exportar en la Semana {selected_week}.")
     
     tab1, tab2 = st.tabs(["📈 KPIs Semanales y Tendencias", "🔍 Deep Dive (Análisis de Detractores)"])
     
     with tab1:
         st.markdown("### 💬 Copiar Resumen para Slack")
-        st.info("Pasa el mouse sobre la caja de abajo y haz clic en el ícono de copiar para pegarlo en Slack.")
+        st.info("Pasa el mouse sobre la caja de abajo y haz clic en el ícono de copiar para pegarlo directamente en Slack.")
         slack_msg = generar_texto_slack(df_metrics, selected_week)
         st.code(slack_msg, language="markdown")
         st.divider()
