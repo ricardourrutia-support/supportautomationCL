@@ -15,9 +15,21 @@ def load_and_clean_data(filepath):
         df = pd.read_csv(filepath, delimiter=',')
         
     df.columns = df.columns.str.strip()
+    
+    # 1. Filtro y mapeo de Audiencias base
     df['Audience'] = df['Audience'].replace({'Private': 'Rider', 'C4B': 'B2B', 'Driver': 'Driver'})
     df = df[df['Audience'].isin(['Rider', 'B2B', 'Driver'])]
     
+    # 2. NUEVA AUDIENCIA: EMERGENCIAS
+    # Buscamos cualquier fila donde el grupo de soporte contenga "emergencia" (case insensitive)
+    mask_emergencias = df['Group name support'].astype(str).str.contains('emergencia', case=False, na=False)
+    df_emergencias = df[mask_emergencias].copy()
+    df_emergencias['Audience'] = 'Emergencias' # Re-etiquetamos la copia
+    
+    # Unimos la nueva audiencia al dataset original
+    df = pd.concat([df, df_emergencias], ignore_index=True)
+    
+    # 3. Fechas y Semanas
     df['Date_Time'] = pd.to_datetime(df['Date_Time'], format='%d/%m/%Y', errors='coerce')
     df['Week'] = df['Date_Time'].dt.isocalendar().week
     
@@ -33,7 +45,7 @@ def load_and_clean_data(filepath):
         except:
             return np.nan
 
-    # Limpiamos las columnas numéricas que puedan tener problemas de formato
+    # 4. Limpieza de columnas numéricas
     cols_to_clean = ['% CSAT', '# First Reply Time (Hours)', 
                      '# Full Resolution Time (Hours)', '#\xa0Tickets con reopen', 'NPS Score']
                      
@@ -71,11 +83,10 @@ def aggregate_weekly(df):
         reopens = grp['#\xa0Tickets con reopen'].sum()
         res['Ratio Reopen/Tickets (%)'] = (reopens / res['Contactos Ticket'] * 100) if res['Contactos Ticket'] > 0 else 0
         
-        # III. Calidad Gestión Canales Real Time (Cálculo Real)
+        # III. Calidad Gestión Canales Real Time
         calls = grp[grp['Contact Type'] == 'Call']
         total_calls = len(calls)
         if total_calls > 0:
-            # Consideramos perdidas las que dicen 'talkdesk' en el ES Output 2nd Level
             missed_calls = calls['ES Output Tags 2nd Level v2'].astype(str).str.contains('talkdesk', case=False).sum()
             res['% Llamadas Atendidas'] = ((total_calls - missed_calls) / total_calls) * 100
         else:
@@ -84,7 +95,6 @@ def aggregate_weekly(df):
         chats = grp[grp['Contact Type'] == 'Chat']
         total_chats = len(chats)
         if total_chats > 0 and 'Chat Missed' in grp.columns:
-            # Sumamos los True que representan chats perdidos
             missed_chats = chats['Chat Missed'].sum() 
             res['% Chats Atendidos'] = ((total_chats - missed_chats) / total_chats) * 100
         else:
@@ -97,7 +107,6 @@ def aggregate_weekly(df):
 # --- INTERFAZ ---
 st.title("🚕 Cabify Support Dashboard - Reporte Semanal")
 
-# Importante: Cargar el CSV que termina en (2) o uno que contenga "Chat Missed"
 uploaded_file = st.file_uploader("Sube el archivo CSV de datos", type=['csv'])
 
 if uploaded_file is not None:
@@ -105,16 +114,18 @@ if uploaded_file is not None:
     df_metrics = aggregate_weekly(df_raw)
     
     st.sidebar.header("Filtros Globales")
-    audiences = df_metrics['Audience'].unique()
+    # Forzamos un orden lógico para el menú
+    all_audiences = ['Rider', 'Driver', 'B2B', 'Emergencias']
+    audiences = [a for a in all_audiences if a in df_metrics['Audience'].unique()]
+    
     selected_audience = st.sidebar.selectbox("Selecciona la Audiencia", audiences)
     
-    # Selector manual de semanas
     df_filtered = df_metrics[df_metrics['Audience'] == selected_audience].sort_values('Week')
     available_weeks = sorted(df_filtered['Week'].dropna().unique(), reverse=True)
     selected_week = st.sidebar.selectbox("Selecciona la Semana a visualizar", available_weeks, index=0)
     
     # -------------------------------------------------------------
-    # EXPORTAR EXCEL NPS VÁLIDO (POR AUDIENCIA)
+    # EXPORTAR EXCEL NPS VÁLIDO
     st.sidebar.divider()
     st.sidebar.subheader("📥 Exportar Datos Crudos")
     st.sidebar.caption("Descarga un Excel separado por pestañas filtrando solo registros con NPS válido.")
@@ -122,7 +133,7 @@ if uploaded_file is not None:
     df_valid_nps = df_raw.dropna(subset=['NPS Score'])
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        for aud in ['Rider', 'B2B', 'Driver']:
+        for aud in audiences:
             df_aud = df_valid_nps[df_valid_nps['Audience'] == aud]
             if not df_aud.empty:
                 df_aud.to_excel(writer, sheet_name=aud, index=False)
@@ -182,7 +193,6 @@ if uploaded_file is not None:
         st.markdown("#### III. Calidad Gestión Canales Real Time")
         c1, c2 = st.columns(2)
         
-        # Validar si hay llamadas para mostrar el indicador
         if pd.notna(curr['% Llamadas Atendidas']):
             c1.metric("% Llamadas Atendidas", f"{curr['% Llamadas Atendidas']:.2f}%", calc_delta_abs(curr['% Llamadas Atendidas'], prev['% Llamadas Atendidas']) + "%", delta_color="normal")
         else:
