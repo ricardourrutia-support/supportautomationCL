@@ -10,9 +10,17 @@ st.set_page_config(page_title="Cabify Support Dashboard", layout="wide", initial
 CABIFY_PURPLE = "#7352FF"
 CABIFY_SECONDARY = "#00D1A3"
 
-# --- FUNCIONES DE CARGA Y LIMPIEZA ---
+def parse_num(s):
+    if pd.isna(s): return np.nan
+    s = str(s).strip().replace('%', '')
+    if '.' in s and ',' in s: s = s.replace('.', '').replace(',', '.')
+    elif ',' in s: s = s.replace(',', '.')
+    try: return float(s)
+    except: return np.nan
+
+# --- CARGA DEL REPORTE GENERAL ---
 @st.cache_data
-def load_and_clean_data(filepath):
+def load_main_data(filepath):
     df = pd.read_csv(filepath, delimiter=';')
     if 'Date_Time' not in df.columns:
         filepath.seek(0)
@@ -26,26 +34,55 @@ def load_and_clean_data(filepath):
     mask_emergencias = df['Group name support'].astype(str).str.contains('emergencia', case=False, na=False)
     df_emergencias = df[mask_emergencias].copy()
     df_emergencias['Audience'] = 'Emergencias' 
-    
     df = pd.concat([df, df_emergencias], ignore_index=True)
+    
     df['Date_Time'] = pd.to_datetime(df['Date_Time'], format='%d/%m/%Y', errors='coerce')
     df['Week'] = df['Date_Time'].dt.isocalendar().week
     
-    def parse_num(s):
-        if pd.isna(s): return np.nan
-        s = str(s).strip().replace('%', '')
-        if '.' in s and ',' in s: s = s.replace('.', '').replace(',', '.')
-        elif ',' in s: s = s.replace(',', '.')
-        try: return float(s)
-        except: return np.nan
-
     cols_to_clean = ['% CSAT', '# First Reply Time (Hours)', '# Full Resolution Time (Hours)', '#\xa0Tickets con reopen', 'NPS Score']
     for col in cols_to_clean:
         matched_col = next((c for c in df.columns if col.replace(' ', '') in c.replace(' ', '')), None)
         if matched_col:
             df[matched_col] = df[matched_col].apply(parse_num)
-            df.rename(columns={matched_col: col}, inplace=True)
+            df = df.rename(columns={matched_col: col}) # Solución al problema de los Nones
+    return df
 
+# --- CARGA DEL REPORTE AEROPUERTO ---
+@st.cache_data
+def load_airport_data(filepath):
+    df = pd.read_csv(filepath, delimiter=';')
+    if 'Fecha de Referencia' not in df.columns:
+        filepath.seek(0)
+        df = pd.read_csv(filepath, delimiter=',')
+        
+    df.columns = df.columns.str.strip()
+    df['Audience'] = 'Aeropuerto'
+    
+    df['Date_Time'] = pd.to_datetime(df['Fecha de Referencia'], format='%d/%m/%Y', errors='coerce')
+    df['Week'] = df['Date_Time'].dt.isocalendar().week
+    
+    # Construcción de Contact Type a partir de las variables booleanas
+    def determine_type(row):
+        if row.get('# Tickets - Call', 0) == 1: return 'Call'
+        if row.get('# Tickets - Chats', 0) == 1: return 'Chat'
+        return 'Ticket'
+    df['Contact Type'] = df.apply(determine_type, axis=1)
+    
+    # Mapeo de columnas para que encaje con el general
+    col_mapping = {
+        '# First Reply Time (Hours)': '# First Reply Time (Hours)',
+        '# Full Resolution Time (Hours)': '# Full Resolution Time (Hours)',
+        '# Tickets Reopen': '#\xa0Tickets con reopen',
+        '% CSAT': '% CSAT',
+        'NPS Score': 'NPS Score'
+    }
+    
+    for old_col, new_col in col_mapping.items():
+        matched_col = next((c for c in df.columns if old_col.replace(' ', '') in c.replace(' ', '')), None)
+        if matched_col:
+            df[matched_col] = df[matched_col].apply(parse_num)
+            df = df.rename(columns={matched_col: new_col})
+            
     return df
 
 @st.cache_data
@@ -68,11 +105,13 @@ def aggregate_weekly(df):
         valid_res = grp['# Full Resolution Time (Hours)'].dropna()
         res['FuRT <36h (%)'] = (valid_res < 36).mean() * 100 if len(valid_res) > 0 else np.nan
         
-        reopens = grp['#\xa0Tickets con reopen'].sum()
-        res['Ratio Reopen/Tickets (%)'] = (reopens / res['Contactos Ticket'] * 100) if res['Contactos Ticket'] > 0 else 0
+        if '#\xa0Tickets con reopen' in grp.columns:
+            reopens = grp['#\xa0Tickets con reopen'].sum()
+            res['Ratio Reopen/Tickets (%)'] = (reopens / res['Contactos Ticket'] * 100) if res['Contactos Ticket'] > 0 else 0
+        else: res['Ratio Reopen/Tickets (%)'] = np.nan
         
         calls = grp[grp['Contact Type'] == 'Call']
-        if len(calls) > 0:
+        if len(calls) > 0 and 'ES Output Tags 2nd Level v2' in grp.columns:
             res['% Llamadas Atendidas'] = ((len(calls) - calls['ES Output Tags 2nd Level v2'].astype(str).str.contains('talkdesk', case=False).sum()) / len(calls)) * 100
         else: res['% Llamadas Atendidas'] = np.nan
             
@@ -118,7 +157,10 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
     pdf.cell(0, 10, clean_txt(f"Resumen Ejecutivo C_OPS - Semana {week}"), ln=True, align='C')
     pdf.ln(5)
 
-    for aud in ['Driver', 'Rider', 'B2B', 'Emergencias']:
+    audiences_in_week = df_metrics[df_metrics['Week'] == week]['Audience'].unique()
+    for aud in ['Driver', 'Rider', 'B2B', 'Emergencias', 'Aeropuerto']:
+        if aud not in audiences_in_week: continue
+        
         curr_df = df_metrics[(df_metrics['Audience'] == aud) & (df_metrics['Week'] == week)]
         prev_df = df_metrics[(df_metrics['Audience'] == aud) & (df_metrics['Week'] == week - 1)]
 
@@ -173,15 +215,24 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
 
 # --- INTERFAZ ---
 st.markdown(f"<h1 style='color: {CABIFY_PURPLE};'>🚕 C_OPS Support Dashboard</h1>", unsafe_allow_html=True)
+st.write("Sube los archivos CSV para consolidar el reporte.")
 
-uploaded_file = st.file_uploader("Sube el archivo CSV de datos", type=['csv'])
+c_up1, c_up2 = st.columns(2)
+with c_up1:
+    file_main = st.file_uploader("1. Archivo General (Data Support)", type=['csv'])
+with c_up2:
+    file_airport = st.file_uploader("2. Archivo Aeropuerto (Firt Datos)", type=['csv'])
 
-if uploaded_file is not None:
-    df_raw = load_and_clean_data(uploaded_file)
+if file_main is not None and file_airport is not None:
+    df_main = load_main_data(file_main)
+    df_airport = load_airport_data(file_airport)
+    
+    # Unimos ambos DataFrames maestramente
+    df_raw = pd.concat([df_main, df_airport], ignore_index=True)
     df_metrics = aggregate_weekly(df_raw)
     
     st.sidebar.markdown(f"<h3 style='color: {CABIFY_PURPLE};'>Filtros y Descargas</h3>", unsafe_allow_html=True)
-    all_audiences = ['Rider', 'Driver', 'B2B', 'Emergencias']
+    all_audiences = ['Rider', 'Driver', 'B2B', 'Emergencias', 'Aeropuerto']
     audiences = [a for a in all_audiences if a in df_metrics['Audience'].unique()]
     
     selected_audience = st.sidebar.selectbox("Selecciona la Audiencia", audiences)
@@ -213,7 +264,7 @@ if uploaded_file is not None:
         for aud in audiences:
             df_aud = df_valid_nps[df_valid_nps['Audience'] == aud]
             if not df_aud.empty:
-                _ = df_aud.to_excel(writer, sheet_name=aud, index=False) # Asignado a "_" para evitar "Nones"
+                _ = df_aud.to_excel(writer, sheet_name=aud, index=False)
     st.sidebar.download_button(
         label="Descargar Reporte NPS (.xlsx)",
         data=output.getvalue(),
@@ -244,7 +295,6 @@ if uploaded_file is not None:
             
             st.markdown("#### I. Performance General de Gestión")
             c1, c2, c3, c4 = st.columns(4)
-            # Agregamos "with cX:" para evitar los múltiples "None"
             with c1: st.metric("Contactos Recibidos", f"{curr['Contactos Recibidos']:,.0f}", calc_delta_pct(curr['Contactos Recibidos'], prev['Contactos Recibidos']), delta_color="inverse")
             with c2: st.metric("Contactos Ticket", f"{curr['Contactos Ticket']:,.0f}", calc_delta_pct(curr['Contactos Ticket'], prev['Contactos Ticket']), delta_color="inverse")
             with c3: st.metric("Contactos Chat", f"{curr['Contactos Chat']:,.0f}", calc_delta_pct(curr['Contactos Chat'], prev['Contactos Chat']), delta_color="inverse")
@@ -286,14 +336,14 @@ if uploaded_file is not None:
                 fig_vol = px.line(df_filtered, x='Week', y='Contactos Recibidos', markers=True, 
                                   title="Volumen de Contactos", color_discrete_sequence=[CABIFY_PURPLE])
                 _ = fig_vol.update_layout(plot_bgcolor="white", xaxis_title="Semana", yaxis_title="Contactos")
-                _ = fig_vol.update_yaxes(rangemode="tozero") # Forzamos que inicie en 0
+                _ = fig_vol.update_yaxes(rangemode="tozero") 
                 st.plotly_chart(fig_vol, use_container_width=True)
                 
             with col_g2:
                 fig_nps = px.line(df_filtered, x='Week', y=['NPS', 'CSAT (%)'], markers=True,
                                   title="Experiencia y Calidad", color_discrete_sequence=[CABIFY_PURPLE, CABIFY_SECONDARY])
                 _ = fig_nps.update_layout(plot_bgcolor="white", xaxis_title="Semana", yaxis_title="Score / %")
-                _ = fig_nps.update_yaxes(range=[-100, 100]) # Forzamos escala fija para evitar saltos drásticos
+                _ = fig_nps.update_yaxes(range=[-100, 100])
                 st.plotly_chart(fig_nps, use_container_width=True)
 
     with tab2:
