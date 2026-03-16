@@ -21,6 +21,25 @@ CORE_COLUMNS = [
     'Tag_3', 'Chat_Missed', 'Description', 'Group_Name'
 ]
 
+# --- LECTOR ROBUSTO DE CSV (Anti-Errores de Formato y Tildes) ---
+def read_csv_robust(filepath, date_col_hint):
+    try:
+        # Intento 1: UTF-8 y punto y coma
+        filepath.seek(0)
+        df = pd.read_csv(filepath, delimiter=';', low_memory=False, encoding='utf-8')
+        if date_col_hint not in df.columns:
+            # Intento 2: UTF-8 y coma
+            filepath.seek(0)
+            df = pd.read_csv(filepath, delimiter=',', low_memory=False, encoding='utf-8')
+    except UnicodeDecodeError:
+        # Si falla por tildes/eñes, usamos formato Latino (Latin-1)
+        filepath.seek(0)
+        df = pd.read_csv(filepath, delimiter=';', low_memory=False, encoding='latin-1')
+        if date_col_hint not in df.columns:
+            filepath.seek(0)
+            df = pd.read_csv(filepath, delimiter=',', low_memory=False, encoding='latin-1')
+    return df
+
 def parse_num(s):
     if pd.isna(s): return np.nan
     s = str(s).strip().replace('%', '')
@@ -39,11 +58,7 @@ def standard_clean(df, mapping):
 # --- CARGA DEL REPORTE GENERAL ---
 @st.cache_data
 def load_main_data(filepath):
-    df = pd.read_csv(filepath, delimiter=';', low_memory=False)
-    if 'Date_Time' not in df.columns:
-        _ = filepath.seek(0)
-        df = pd.read_csv(filepath, delimiter=',', low_memory=False)
-        
+    df = read_csv_robust(filepath, 'Date_Time')
     df.columns = df.columns.str.strip()
     df = df.loc[:, ~df.columns.duplicated()] 
     
@@ -76,11 +91,7 @@ def load_main_data(filepath):
 # --- CARGA DEL REPORTE AEROPUERTO ---
 @st.cache_data
 def load_airport_data(filepath):
-    df = pd.read_csv(filepath, delimiter=';', low_memory=False)
-    if 'Fecha de Referencia' not in df.columns:
-        _ = filepath.seek(0)
-        df = pd.read_csv(filepath, delimiter=',', low_memory=False)
-        
+    df = read_csv_robust(filepath, 'Fecha de Referencia')
     df.columns = df.columns.str.strip()
     df = df.loc[:, ~df.columns.duplicated()] 
     
@@ -246,7 +257,7 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
                     ax2.set_ylabel('NPS', color='#00D1A3', fontweight='bold')
                     ax2.tick_params(axis='y', labelcolor='#00D1A3')
                     ax2.set_ylim([-100, 100])
-                    plt.title(f"Evolución {aud} (Volumen vs NPS)", color='#333333', fontweight='bold')
+                    plt.title(f"Evolucion {aud} (Volumen vs NPS)", color='#333333', fontweight='bold')
                     ax1.spines['top'].set_visible(False)
                     ax2.spines['top'].set_visible(False)
                     plt.tight_layout()
@@ -288,7 +299,7 @@ with c_up2:
     file_airport = st.file_uploader("2. Archivo Aeropuerto (Firt Datos)", type=['csv'])
 
 if file_main is not None and file_airport is not None:
-    with st.spinner('Estandarizando y fusionando archivos...'):
+    with st.spinner('Procesando, filtrando y consolidando archivos...'):
         df_main = load_main_data(file_main)
         df_airport = load_airport_data(file_airport)
         
@@ -415,7 +426,6 @@ if file_main is not None and file_airport is not None:
     with tab2:
         st.markdown(f"### 🔍 Deep Dive: ¿Qué dicen nuestros detractores? ({selected_audience} - Sem {selected_week})")
         
-        # Insertamos el resumen narrativo directamente en la App
         resumen_app = analizar_detractores(df_raw, selected_audience, selected_week)
         if "Excelente" in resumen_app:
             st.success(resumen_app)
@@ -424,7 +434,6 @@ if file_main is not None and file_airport is not None:
             
         st.divider()
         
-        # Mantenemos el gráfico de Tags Nivel 3 para tener el contexto completo de todos los tickets
         st.markdown("#### Distribución General de Motivos (Tag Nivel 3)")
         df_raw_filtered = df_raw[(df_raw['Audience'] == selected_audience) & (df_raw['Week'] == selected_week)]
         
