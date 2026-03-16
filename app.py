@@ -14,7 +14,7 @@ st.set_page_config(page_title="Cabify Support Dashboard", layout="wide", initial
 CABIFY_PURPLE = "#7352FF"
 CABIFY_SECONDARY = "#00D1A3"
 
-# Columnas Core 
+# Columnas Core
 CORE_COLUMNS = [
     'Date_Time', 'Audience', 'Contact Type', 'NPS_Score', 'CSAT_Pct', 
     'FRT_Hours', 'FuRT_Hours', 'Reopen_Count', 'Tag_1', 'Tag_2', 
@@ -32,15 +32,14 @@ def read_csv_robust(filepath):
                 filepath.seek(0)
                 df = pd.read_csv(filepath, delimiter=sep, low_memory=False, encoding=enc, on_bad_lines='skip')
                 if len(df.columns) > 1:
-                    # Limpieza maestra de espacios fantasmas en los títulos
-                    df.columns = df.columns.str.strip().str.replace('\xa0', ' ')
+                    df.columns = df.columns.str.strip()
                     return df
             except Exception:
                 continue
                 
     filepath.seek(0)
     df = pd.read_csv(filepath, delimiter=';', low_memory=False, encoding='latin-1', on_bad_lines='skip')
-    df.columns = df.columns.str.strip().str.replace('\xa0', ' ')
+    df.columns = df.columns.str.strip()
     return df
 
 def parse_num(s):
@@ -64,11 +63,10 @@ def load_main_data(filepath):
     df = read_csv_robust(filepath)
     df = df.loc[:, ~df.columns.duplicated()] 
     
-    # Mapeo corregido sin espacios fantasmas
     mapping = {
         'Date_Time': 'Date_Time', 'Audience': 'Audience', 'Contact Type': 'Contact Type',
-        'NPS Score': 'NPS_Score', '% CSAT': 'CSAT_Pct', '# First Reply Time (Hours)': 'FRT_Hours',
-        '# Full Resolution Time (Hours)': 'FuRT_Hours', '# Tickets con reopen': 'Reopen_Count',
+        'NPS Score': 'NPS_Score', '% CSAT': 'CSAT_Pct', '# First Reply Time (Hours) ': 'FRT_Hours',
+        '# Full Resolution Time (Hours)': 'FuRT_Hours', '#\xa0Tickets con reopen': 'Reopen_Count',
         'ES Output Tags 1st Level v2': 'Tag_1', 'ES Output Tags 2nd Level v2': 'Tag_2', 
         'ES Output Tags 3rd Level v2': 'Tag_3', 'Chat Missed': 'Chat_Missed', 
         'Description': 'Description', 'Group name support': 'Group_Name'
@@ -142,7 +140,6 @@ def aggregate_weekly(df):
         
         valid_res = grp['FuRT_Hours'].dropna() if 'FuRT_Hours' in grp.columns else pd.Series()
         res['FuRT <36h (%)'] = (valid_res < 36).mean() * 100 if len(valid_res) > 0 else np.nan
-        
         valid_frt = grp['FRT_Hours'].dropna() if 'FRT_Hours' in grp.columns else pd.Series()
         res['FiRT <24h (%)'] = (valid_frt < 24).mean() * 100 if len(valid_frt) > 0 else np.nan
         
@@ -169,7 +166,7 @@ def analizar_detractores(df_raw, aud, week):
     detractores = df_raw[(df_raw['Audience'] == aud) & (df_raw['Week'] == week) & (df_raw['NPS_Score'] == -100)]
     
     if detractores.empty:
-        return "✅ Excelente: No hay registros de encuestas NPS -100 para esta audiencia en la semana seleccionada."
+        return "Excelente: No hay registros de encuestas NPS -100 para esta audiencia en la semana seleccionada."
     
     total = len(detractores)
     t1 = detractores['Tag_1'].value_counts().index[0] if 'Tag_1' in detractores.columns and not detractores['Tag_1'].dropna().empty else "No Definido"
@@ -180,11 +177,13 @@ def analizar_detractores(df_raw, aud, week):
     if 'Description' in detractores.columns:
         sample_df = detractores[(detractores['Tag_3'] == t3) & (detractores['Description'].notna())]
         if not sample_df.empty:
+            # Reemplazamos saltos de línea para que se vea como un solo bloque limpio
             desc_sample = str(sample_df['Description'].iloc[0]).replace('\n', ' ')[:150] + "..."
             
-    resumen = f"🚨 Análisis de Detractores: Tuvimos {total} casos evaluados con NPS -100. "
-    resumen += f"A nivel macro (Tag 1), la fricción principal está en '{t1}'. "
-    resumen += f"Al profundizar, los usuarios reportan mayormente problemas de '{t2}' (Tag 2), y de forma muy específica se quejan de '{t3}' (Tag 3). "
+    # Redacción sin emojis ni caracteres raros para el PDF
+    resumen = f"Tuvimos {total} casos evaluados con NPS -100. "
+    resumen += f"A nivel macro (Tag 1), la friccion principal esta en '{t1}'. "
+    resumen += f"Al profundizar, los usuarios reportan mayormente problemas de '{t2}' (Tag 2), y de forma muy especifica se quejan de '{t3}' (Tag 3). "
     if desc_sample:
         resumen += f"Un ejemplo literal de la voz del cliente indica: \"{desc_sample}\""
         
@@ -198,6 +197,7 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
     def clean_txt(text):
         if pd.isna(text): return ""
         text = str(text).replace('"', "'").replace('\n', ' ')
+        # Convierte de forma segura para evitar el error UnicodeDecodeError en el PDF
         return text.encode('latin-1', 'replace').decode('latin-1')
         
     def print_metric_line(label, val_str, delta_val, is_higher_better=True, is_pct=False):
@@ -217,9 +217,10 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
             delta_str = f"({delta_val:+.1f}{suffix})"
         pdf.cell(0, 6, clean_txt(delta_str), ln=1)
         
+    # --- Título Actualizado ---
     pdf.set_font("Arial", 'B', 16)
-    pdf.set_text_color(115, 82, 255)
-    pdf.cell(0, 10, clean_txt(f"Resumen Ejecutivo C_OPS - Semana {week}"), ln=True, align='C')
+    pdf.set_text_color(115, 82, 255) # Cabify Purple
+    pdf.cell(0, 10, clean_txt(f"Resumen Ejecutivo C_OPS - Support - Semana {week}"), ln=True, align='C')
     pdf.ln(5)
 
     audiences_in_week = df_metrics[df_metrics['Week'] == week]['Audience'].unique()
@@ -249,6 +250,7 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
             print_metric_line("FiRT <24h", f"{curr['FiRT <24h (%)']:.1f}%", firt_diff, is_higher_better=True, is_pct=True)
             print_metric_line("Ratio Reopen", f"{curr['Ratio Reopen/Tickets (%)']:.1f}%", reop_diff, is_higher_better=False, is_pct=True)
 
+            # Insertar Gráfico
             df_trend = df_metrics[df_metrics['Audience'] == aud].sort_values('Week')
             if len(df_trend) > 1:
                 img_path = f"trend_{aud}.png"
@@ -277,15 +279,24 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
                     os.remove(img_path)
                 except Exception: pass
 
+            # --- Análisis Narrativo de Detractores ---
             insight_nps = analizar_detractores(df_raw, aud, week)
             pdf.ln(2)
-            if "Excelente" in insight_nps:
-                pdf.set_text_color(0, 209, 163)
-            else:
-                pdf.set_text_color(255, 82, 82)
             
-            pdf.set_font("Arial", 'I', 9)
-            pdf.multi_cell(0, 5, clean_txt(insight_nps))
+            if "Excelente" in insight_nps:
+                pdf.set_font("Arial", 'I', 9)
+                pdf.set_text_color(0, 209, 163) # Verde
+                pdf.multi_cell(0, 5, clean_txt(insight_nps))
+            else:
+                # Título discreto en rojo
+                pdf.set_font("Arial", 'B', 9)
+                pdf.set_text_color(255, 82, 82)
+                pdf.cell(0, 5, clean_txt("  [!] ALERTA NPS:"), ln=True)
+                
+                # Texto narrativo en gris oscuro, limpio y legible
+                pdf.set_font("Arial", '', 9)
+                pdf.set_text_color(80, 80, 80)
+                pdf.multi_cell(0, 5, clean_txt("  " + insight_nps))
 
             pdf.ln(5)
             pdf.set_draw_color(220, 220, 220)
@@ -305,7 +316,7 @@ with c_up2:
     file_airport = st.file_uploader("2. Archivo Aeropuerto (Firt Datos)", type=['csv'])
 
 if file_main is not None and file_airport is not None:
-    with st.spinner('Escaneando, limpiando y fusionando archivos de forma robusta...'):
+    with st.spinner('Procesando, filtrando y consolidando archivos...'):
         df_main = load_main_data(file_main)
         df_airport = load_airport_data(file_airport)
         
@@ -323,6 +334,7 @@ if file_main is not None and file_airport is not None:
     available_weeks = sorted(df_filtered['Week'].dropna().unique(), reverse=True)
     selected_week = st.sidebar.selectbox("Selecciona la Semana a visualizar", available_weeks, index=0)
     
+    # EXPORTAR RESUMEN EJECUTIVO EN PDF
     st.sidebar.divider()
     st.sidebar.subheader("📄 Reporte Directivo (PDF)")
     st.sidebar.caption("Descarga el resumen de todas las audiencias con código de color, gráficos evolutivos y análisis narrativo de detractores.")
@@ -335,6 +347,7 @@ if file_main is not None and file_airport is not None:
         mime="application/pdf"
     )
 
+    # EXPORTAR EXCEL NPS VÁLIDO
     st.sidebar.divider()
     st.sidebar.subheader("📥 Exportar Datos Crudos")
     
@@ -354,6 +367,7 @@ if file_main is not None and file_airport is not None:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
     
+    # --- TABS PARA EL DASHBOARD ---
     tab1, tab2 = st.tabs(["📈 KPIs Semanales y Tendencias", "🔍 Deep Dive (Análisis de Detractores)"])
     
     with tab1:
@@ -429,11 +443,12 @@ if file_main is not None and file_airport is not None:
     with tab2:
         st.markdown(f"### 🔍 Deep Dive: ¿Qué dicen nuestros detractores? ({selected_audience} - Sem {selected_week})")
         
+        # Resumen en la aplicación (Mantenemos los emojis visuales aquí porque Streamlit sí los soporta)
         resumen_app = analizar_detractores(df_raw, selected_audience, selected_week)
         if "Excelente" in resumen_app:
-            st.success(resumen_app)
+            st.success("✅ " + resumen_app)
         else:
-            st.error(resumen_app)
+            st.error("🚨 " + resumen_app)
             
         st.divider()
         
