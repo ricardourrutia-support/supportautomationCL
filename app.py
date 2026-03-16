@@ -14,11 +14,11 @@ st.set_page_config(page_title="Cabify Support Dashboard", layout="wide", initial
 CABIFY_PURPLE = "#7352FF"
 CABIFY_SECONDARY = "#00D1A3"
 
-# Columnas Core
+# Columnas Core (Agregamos Include_Contacts)
 CORE_COLUMNS = [
     'Date_Time', 'Audience', 'Contact Type', 'NPS_Score', 'CSAT_Pct', 
     'FRT_Hours', 'FuRT_Hours', 'Reopen_Count', 'Tag_1', 'Tag_2', 
-    'Tag_3', 'Chat_Missed', 'Description', 'Group_Name'
+    'Tag_3', 'Chat_Missed', 'Description', 'Group_Name', 'Include_Contacts'
 ]
 
 # --- LECTOR ROBUSTO DE CSV ---
@@ -63,7 +63,7 @@ def load_main_data(filepath):
     df = read_csv_robust(filepath)
     df = df.loc[:, ~df.columns.duplicated()] 
     
-    # --- NUEVO FILTRO: Include Contacts == 'Rest' ---
+    # 1. FILTRO ESTRICTO DE CONTACTOS (Validado internamente)
     if 'Include Contacts' in df.columns:
         df = df[df['Include Contacts'].astype(str).str.strip().str.lower() == 'rest']
     
@@ -73,7 +73,8 @@ def load_main_data(filepath):
         '# Full Resolution Time (Hours)': 'FuRT_Hours', '# Tickets con reopen': 'Reopen_Count',
         'ES Output Tags 1st Level v2': 'Tag_1', 'ES Output Tags 2nd Level v2': 'Tag_2', 
         'ES Output Tags 3rd Level v2': 'Tag_3', 'Chat Missed': 'Chat_Missed', 
-        'Description': 'Description', 'Group name support': 'Group_Name'
+        'Description': 'Description', 'Group name support': 'Group_Name',
+        'Include Contacts': 'Include_Contacts' # Lo traemos al estándar
     }
     
     df = standard_clean(df, mapping)
@@ -114,11 +115,16 @@ def load_airport_data(filepath):
         '# Full Resolution Time (Hours)': 'FuRT_Hours', '# Tickets Reopen': 'Reopen_Count',
         'ES Output Tags 1st Level v2': 'Tag_1', 'ES Output Tags 2nd Level v2': 'Tag_2', 
         'ES Output Tags 3rd Level v2': 'Tag_3', 'Chat Missed': 'Chat_Missed', 
-        'Description': 'Description', 'Group name support': 'Group_Name'
+        'Description': 'Description', 'Group name support': 'Group_Name',
+        'Include Contacts': 'Include_Contacts'
     }
     
     df = standard_clean(df, mapping)
     
+    # Nos aseguramos de inyectar 'Rest' si la base Aeropuerto no traía la columna
+    if 'Include_Contacts' not in df.columns:
+        df['Include_Contacts'] = 'Rest'
+        
     if 'Date_Time' in df.columns:
         df['Date_Time'] = pd.to_datetime(df['Date_Time'], format='%d/%m/%Y', errors='coerce')
         
@@ -360,7 +366,7 @@ with c_up2:
     file_airport = st.file_uploader("2. Archivo Aeropuerto (Firt Datos)", type=['csv'])
 
 if file_main is not None and file_airport is not None:
-    with st.spinner('Procesando, filtrando y consolidando archivos...'):
+    with st.spinner('Filtrando Contactos (Solo Rest), limpiando y fusionando archivos...'):
         df_main = load_main_data(file_main)
         df_airport = load_airport_data(file_airport)
         
