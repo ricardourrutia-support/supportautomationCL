@@ -8,6 +8,7 @@ st.set_page_config(page_title="Cabify Support Dashboard", layout="wide")
 # --- FUNCIONES DE CARGA Y LIMPIEZA ---
 @st.cache_data
 def load_and_clean_data(filepath):
+    # Intentamos primero con punto y coma, si falla el formato, intentamos con coma
     df = pd.read_csv(filepath, delimiter=';')
     if 'Date_Time' not in df.columns:
         filepath.seek(0)
@@ -32,8 +33,10 @@ def load_and_clean_data(filepath):
         except:
             return np.nan
 
-    cols_to_clean = ['User # DO (Total)', '% CSAT', '# First Reply Time (Hours)', 
+    # Limpiamos las columnas numéricas que puedan tener problemas de formato
+    cols_to_clean = ['% CSAT', '# First Reply Time (Hours)', 
                      '# Full Resolution Time (Hours)', '#\xa0Tickets con reopen', 'NPS Score']
+                     
     for col in cols_to_clean:
         matched_col = next((c for c in df.columns if col.replace(' ', '') in c.replace(' ', '')), None)
         if matched_col:
@@ -46,18 +49,17 @@ def load_and_clean_data(filepath):
 def aggregate_weekly(df):
     def aggs(grp):
         res = {}
+        # I. Performance General
         res['Contactos Recibidos'] = len(grp)
         res['Contactos Ticket'] = len(grp[grp['Contact Type'] == 'Ticket'])
         res['Contactos Chat'] = len(grp[grp['Contact Type'] == 'Chat'])
         res['Contactos Call'] = len(grp[grp['Contact Type'] == 'Call'])
         
-        # Ratio Contactos / DO (Placeholder temporal, requiere cruce preciso por usuario)
-        res['Ratio Contactos / DO'] = 1.90 
-        
         res['NPS'] = grp['NPS Score'].mean()
         csat = grp['% CSAT'].mean()
         res['CSAT (%)'] = csat * 100 if pd.notna(csat) and csat <= 1.0 else csat
         
+        # II. Calidad Gestión Tickets
         res['TMO (Hrs)'] = grp['# Full Resolution Time (Hours)'].mean()
         
         valid_frt = grp['# First Reply Time (Hours)'].dropna()
@@ -69,10 +71,25 @@ def aggregate_weekly(df):
         reopens = grp['#\xa0Tickets con reopen'].sum()
         res['Ratio Reopen/Tickets (%)'] = (reopens / res['Contactos Ticket'] * 100) if res['Contactos Ticket'] > 0 else 0
         
-        # Placeholders basados en capacity plan según glosario
-        res['% Llamadas Atendidas'] = 93.88
-        res['% Chats Atendidos'] = 100.00
-        
+        # III. Calidad Gestión Canales Real Time (Cálculo Real)
+        calls = grp[grp['Contact Type'] == 'Call']
+        total_calls = len(calls)
+        if total_calls > 0:
+            # Consideramos perdidas las que dicen 'talkdesk' en el ES Output 2nd Level
+            missed_calls = calls['ES Output Tags 2nd Level v2'].astype(str).str.contains('talkdesk', case=False).sum()
+            res['% Llamadas Atendidas'] = ((total_calls - missed_calls) / total_calls) * 100
+        else:
+            res['% Llamadas Atendidas'] = np.nan
+            
+        chats = grp[grp['Contact Type'] == 'Chat']
+        total_chats = len(chats)
+        if total_chats > 0 and 'Chat Missed' in grp.columns:
+            # Sumamos los True que representan chats perdidos
+            missed_chats = chats['Chat Missed'].sum() 
+            res['% Chats Atendidos'] = ((total_chats - missed_chats) / total_chats) * 100
+        else:
+            res['% Chats Atendidos'] = np.nan
+            
         return pd.Series(res)
 
     return df.groupby(['Week', 'Audience']).apply(aggs).reset_index()
@@ -80,26 +97,27 @@ def aggregate_weekly(df):
 # --- INTERFAZ ---
 st.title("🚕 Cabify Support Dashboard - Reporte Semanal")
 
+# Importante: Cargar el CSV que termina en (2) o uno que contenga "Chat Missed"
 uploaded_file = st.file_uploader("Sube el archivo CSV de datos", type=['csv'])
 
 if uploaded_file is not None:
     df_raw = load_and_clean_data(uploaded_file)
     df_metrics = aggregate_weekly(df_raw)
     
-    st.sidebar.header("Filtros y Descargas")
+    st.sidebar.header("Filtros Globales")
     audiences = df_metrics['Audience'].unique()
     selected_audience = st.sidebar.selectbox("Selecciona la Audiencia", audiences)
     
-    # Selector de Semana Manual para evitar data incompleta
+    # Selector manual de semanas
     df_filtered = df_metrics[df_metrics['Audience'] == selected_audience].sort_values('Week')
     available_weeks = sorted(df_filtered['Week'].dropna().unique(), reverse=True)
     selected_week = st.sidebar.selectbox("Selecciona la Semana a visualizar", available_weeks, index=0)
     
     # -------------------------------------------------------------
-    # EXPORTAR EXCEL NPS VÁLIDO
+    # EXPORTAR EXCEL NPS VÁLIDO (POR AUDIENCIA)
     st.sidebar.divider()
-    st.sidebar.subheader("📥 Exportar Datos Crudos (NPS Válido)")
-    st.sidebar.write("Descarga un Excel separado por pestañas filtrando solo registros con NPS válido.")
+    st.sidebar.subheader("📥 Exportar Datos Crudos")
+    st.sidebar.caption("Descarga un Excel separado por pestañas filtrando solo registros con NPS válido.")
     
     df_valid_nps = df_raw.dropna(subset=['NPS Score'])
     output = io.BytesIO()
@@ -123,7 +141,6 @@ if uploaded_file is not None:
     
     if not current_data.empty:
         curr = current_data.iloc[0]
-        # Si no hay data previa, llenamos con ceros para que no tire error
         prev = prev_data.iloc[0] if not prev_data.empty else current_data.iloc[0] * 0 
         
         def calc_delta_pct(current, previous):
@@ -135,7 +152,7 @@ if uploaded_file is not None:
             return f"{current - previous:+.2f}"
             
         st.markdown(f"### Audiencia: **{selected_audience}** | Resumen Semana **{selected_week}**")
-        st.caption("Los indicadores en color rojo/verde representan la variación respecto a la semana anterior.")
+        st.caption("Los indicadores en color **verde** o **rojo** representan la variación WoW respecto a la semana anterior.")
         
         # --- I. Performance General ---
         st.markdown("#### I. Performance General de Gestión")
@@ -145,10 +162,9 @@ if uploaded_file is not None:
         c3.metric("Contactos Chat", f"{curr['Contactos Chat']:,.0f}", calc_delta_pct(curr['Contactos Chat'], prev['Contactos Chat']), delta_color="inverse")
         c4.metric("Contactos Call", f"{curr['Contactos Call']:,.0f}", calc_delta_pct(curr['Contactos Call'], prev['Contactos Call']), delta_color="inverse")
         
-        c5, c6, c7, c8 = st.columns(4)
-        c5.metric("Ratio Contactos/DO", f"{curr['Ratio Contactos / DO']:.2f}", calc_delta_abs(curr['Ratio Contactos / DO'], prev['Ratio Contactos / DO']), delta_color="inverse")
-        c6.metric("NPS Score", f"{curr['NPS']:.2f}", calc_delta_abs(curr['NPS'], prev['NPS']), delta_color="normal")
-        c7.metric("CSAT", f"{curr['CSAT (%)']:.1f}%", calc_delta_abs(curr['CSAT (%)'], prev['CSAT (%)']) + "%", delta_color="normal")
+        c5, c6, c7 = st.columns(3)
+        c5.metric("NPS Score", f"{curr['NPS']:.2f}", calc_delta_abs(curr['NPS'], prev['NPS']), delta_color="normal")
+        c6.metric("CSAT", f"{curr['CSAT (%)']:.1f}%", calc_delta_abs(curr['CSAT (%)'], prev['CSAT (%)']) + "%", delta_color="normal")
         
         st.divider()
         
@@ -164,6 +180,15 @@ if uploaded_file is not None:
         
         # --- III. Calidad Canales Real Time ---
         st.markdown("#### III. Calidad Gestión Canales Real Time")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("% Llamadas Atendidas", f"{curr['% Llamadas Atendidas']:.2f}%", "0.00%", delta_color="normal")
-        c2.metric("% Chats Atendidos", f"{curr['% Chats Atendidos']:.2f}%", "0.00%", delta_color="normal")
+        c1, c2 = st.columns(2)
+        
+        # Validar si hay llamadas para mostrar el indicador
+        if pd.notna(curr['% Llamadas Atendidas']):
+            c1.metric("% Llamadas Atendidas", f"{curr['% Llamadas Atendidas']:.2f}%", calc_delta_abs(curr['% Llamadas Atendidas'], prev['% Llamadas Atendidas']) + "%", delta_color="normal")
+        else:
+            c1.metric("% Llamadas Atendidas", "S/D")
+            
+        if pd.notna(curr['% Chats Atendidos']):
+            c2.metric("% Chats Atendidos", f"{curr['% Chats Atendidos']:.2f}%", calc_delta_abs(curr['% Chats Atendidos'], prev['% Chats Atendidos']) + "%", delta_color="normal")
+        else:
+            c2.metric("% Chats Atendidos", "S/D")
