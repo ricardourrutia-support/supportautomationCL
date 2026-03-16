@@ -1,9 +1,13 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
 import io
 
-st.set_page_config(page_title="Cabify Support Dashboard", layout="wide")
+# Configuración estilo Cabify Minimalista
+st.set_page_config(page_title="Cabify Support Dashboard", layout="wide", initial_sidebar_state="expanded")
+CABIFY_PURPLE = "#7352FF"
+CABIFY_SECONDARY = "#00D1A3"
 
 # --- FUNCIONES DE CARGA Y LIMPIEZA ---
 @st.cache_data
@@ -105,7 +109,7 @@ def aggregate_weekly(df):
     return df.groupby(['Week', 'Audience']).apply(aggs).reset_index()
 
 # --- INTERFAZ ---
-st.title("🚕 Cabify Support Dashboard - Reporte Semanal")
+st.markdown(f"<h1 style='color: {CABIFY_PURPLE};'>🚕 C_OPS Support Dashboard</h1>", unsafe_allow_html=True)
 
 uploaded_file = st.file_uploader("Sube el archivo CSV de datos", type=['csv'])
 
@@ -113,8 +117,7 @@ if uploaded_file is not None:
     df_raw = load_and_clean_data(uploaded_file)
     df_metrics = aggregate_weekly(df_raw)
     
-    st.sidebar.header("Filtros Globales")
-    # Forzamos un orden lógico para el menú
+    st.sidebar.markdown(f"<h3 style='color: {CABIFY_PURPLE};'>Filtros Globales</h3>", unsafe_allow_html=True)
     all_audiences = ['Rider', 'Driver', 'B2B', 'Emergencias']
     audiences = [a for a in all_audiences if a in df_metrics['Audience'].unique()]
     
@@ -145,60 +148,105 @@ if uploaded_file is not None:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
     
-    # -------------------------------------------------------------
-    # CÁLCULOS WOW (WEEK OVER WEEK)
-    current_data = df_filtered[df_filtered['Week'] == selected_week]
-    prev_data = df_filtered[df_filtered['Week'] == selected_week - 1]
+    # --- TABS PARA EL DASHBOARD ---
+    tab1, tab2 = st.tabs(["📈 KPIs Semanales y Tendencias", "🔍 Deep Dive (Motivos de Contacto)"])
     
-    if not current_data.empty:
-        curr = current_data.iloc[0]
-        prev = prev_data.iloc[0] if not prev_data.empty else current_data.iloc[0] * 0 
+    with tab1:
+        # CÁLCULOS WOW (WEEK OVER WEEK)
+        current_data = df_filtered[df_filtered['Week'] == selected_week]
+        prev_data = df_filtered[df_filtered['Week'] == selected_week - 1]
         
-        def calc_delta_pct(current, previous):
-            if previous == 0 or pd.isna(previous): return "0.0%"
-            return f"{((current - previous) / previous) * 100:+.2f}%"
+        if not current_data.empty:
+            curr = current_data.iloc[0]
+            prev = prev_data.iloc[0] if not prev_data.empty else current_data.iloc[0] * 0 
             
-        def calc_delta_abs(current, previous):
-            if pd.isna(previous): return "+0.0"
-            return f"{current - previous:+.2f}"
+            def calc_delta_pct(current, previous):
+                if previous == 0 or pd.isna(previous): return "0.0%"
+                return f"{((current - previous) / previous) * 100:+.2f}%"
+                
+            def calc_delta_abs(current, previous):
+                if pd.isna(previous): return "+0.0"
+                return f"{current - previous:+.2f}"
+                
+            st.markdown(f"### Resumen Semana **{selected_week}** - {selected_audience}")
+            st.caption("Los indicadores en color **verde** o **rojo** representan la variación WoW respecto a la semana anterior.")
             
-        st.markdown(f"### Audiencia: **{selected_audience}** | Resumen Semana **{selected_week}**")
-        st.caption("Los indicadores en color **verde** o **rojo** representan la variación WoW respecto a la semana anterior.")
+            # --- I. Performance General ---
+            st.markdown("#### I. Performance General de Gestión")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Contactos Recibidos", f"{curr['Contactos Recibidos']:,.0f}", calc_delta_pct(curr['Contactos Recibidos'], prev['Contactos Recibidos']), delta_color="inverse")
+            c2.metric("Contactos Ticket", f"{curr['Contactos Ticket']:,.0f}", calc_delta_pct(curr['Contactos Ticket'], prev['Contactos Ticket']), delta_color="inverse")
+            c3.metric("Contactos Chat", f"{curr['Contactos Chat']:,.0f}", calc_delta_pct(curr['Contactos Chat'], prev['Contactos Chat']), delta_color="inverse")
+            c4.metric("Contactos Call", f"{curr['Contactos Call']:,.0f}", calc_delta_pct(curr['Contactos Call'], prev['Contactos Call']), delta_color="inverse")
+            
+            c5, c6, c7 = st.columns(3)
+            c5.metric("NPS Score", f"{curr['NPS']:.2f}", calc_delta_abs(curr['NPS'], prev['NPS']), delta_color="normal")
+            c6.metric("CSAT", f"{curr['CSAT (%)']:.1f}%", calc_delta_abs(curr['CSAT (%)'], prev['CSAT (%)']) + "%", delta_color="normal")
+            
+            st.divider()
+            
+            # --- II. Calidad Gestión Tickets ---
+            st.markdown("#### II. Calidad Gestión de Tickets")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("TMO Promedio (Hrs)", f"{curr['TMO (Hrs)']:.2f}", calc_delta_abs(curr['TMO (Hrs)'], prev['TMO (Hrs)']), delta_color="inverse")
+            c2.metric("SLA 1ra Respuesta (<24hrs)", f"{curr['FiRT <24h (%)']:.2f}%", calc_delta_abs(curr['FiRT <24h (%)'], prev['FiRT <24h (%)']) + "%", delta_color="normal")
+            c3.metric("SLA Resolución (<36hrs)", f"{curr['FuRT <36h (%)']:.2f}%", calc_delta_abs(curr['FuRT <36h (%)'], prev['FuRT <36h (%)']) + "%", delta_color="normal")
+            c4.metric("Ratio Reopen / Tickets", f"{curr['Ratio Reopen/Tickets (%)']:.2f}%", calc_delta_abs(curr['Ratio Reopen/Tickets (%)'], prev['Ratio Reopen/Tickets (%)']) + "%", delta_color="inverse")
+            
+            st.divider()
+            
+            # --- III. Calidad Canales Real Time ---
+            st.markdown("#### III. Calidad Gestión Canales Real Time")
+            c1, c2 = st.columns(2)
+            
+            if pd.notna(curr['% Llamadas Atendidas']):
+                c1.metric("% Llamadas Atendidas", f"{curr['% Llamadas Atendidas']:.2f}%", calc_delta_abs(curr['% Llamadas Atendidas'], prev['% Llamadas Atendidas']) + "%", delta_color="normal")
+            else:
+                c1.metric("% Llamadas Atendidas", "S/D")
+                
+            if pd.notna(curr['% Chats Atendidos']):
+                c2.metric("% Chats Atendidos", f"{curr['% Chats Atendidos']:.2f}%", calc_delta_abs(curr['% Chats Atendidos'], prev['% Chats Atendidos']) + "%", delta_color="normal")
+            else:
+                c2.metric("% Chats Atendidos", "S/D")
+
+            # --- GRÁFICOS DE TENDENCIA ---
+            st.divider()
+            st.markdown("#### 📈 Evolución Histórica")
+            col_g1, col_g2 = st.columns(2)
+            
+            with col_g1:
+                fig_vol = px.line(df_filtered, x='Week', y='Contactos Recibidos', markers=True, 
+                                  title="Volumen de Contactos", color_discrete_sequence=[CABIFY_PURPLE])
+                fig_vol.update_layout(plot_bgcolor="white", xaxis_title="Semana", yaxis_title="Contactos")
+                st.plotly_chart(fig_vol, use_container_width=True)
+                
+            with col_g2:
+                fig_nps = px.line(df_filtered, x='Week', y=['NPS', 'CSAT (%)'], markers=True,
+                                  title="Experiencia y Calidad", color_discrete_sequence=[CABIFY_PURPLE, CABIFY_SECONDARY])
+                fig_nps.update_layout(plot_bgcolor="white", xaxis_title="Semana", yaxis_title="Score / %")
+                st.plotly_chart(fig_nps, use_container_width=True)
+
+    with tab2:
+        st.markdown(f"### 🔍 Deep Dive: Motivos de Contacto ({selected_audience} - Sem {selected_week})")
+        st.write("Análisis de las etiquetas de salida (Output Tags) para identificar principales puntos de dolor.")
         
-        # --- I. Performance General ---
-        st.markdown("#### I. Performance General de Gestión")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Contactos Recibidos", f"{curr['Contactos Recibidos']:,.0f}", calc_delta_pct(curr['Contactos Recibidos'], prev['Contactos Recibidos']), delta_color="inverse")
-        c2.metric("Contactos Ticket", f"{curr['Contactos Ticket']:,.0f}", calc_delta_pct(curr['Contactos Ticket'], prev['Contactos Ticket']), delta_color="inverse")
-        c3.metric("Contactos Chat", f"{curr['Contactos Chat']:,.0f}", calc_delta_pct(curr['Contactos Chat'], prev['Contactos Chat']), delta_color="inverse")
-        c4.metric("Contactos Call", f"{curr['Contactos Call']:,.0f}", calc_delta_pct(curr['Contactos Call'], prev['Contactos Call']), delta_color="inverse")
+        df_raw_filtered = df_raw[(df_raw['Audience'] == selected_audience) & (df_raw['Week'] == selected_week)]
         
-        c5, c6, c7 = st.columns(3)
-        c5.metric("NPS Score", f"{curr['NPS']:.2f}", calc_delta_abs(curr['NPS'], prev['NPS']), delta_color="normal")
-        c6.metric("CSAT", f"{curr['CSAT (%)']:.1f}%", calc_delta_abs(curr['CSAT (%)'], prev['CSAT (%)']) + "%", delta_color="normal")
-        
-        st.divider()
-        
-        # --- II. Calidad Gestión Tickets ---
-        st.markdown("#### II. Calidad Gestión de Tickets")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("TMO Promedio (Hrs)", f"{curr['TMO (Hrs)']:.2f}", calc_delta_abs(curr['TMO (Hrs)'], prev['TMO (Hrs)']), delta_color="inverse")
-        c2.metric("SLA 1ra Respuesta (<24hrs)", f"{curr['FiRT <24h (%)']:.2f}%", calc_delta_abs(curr['FiRT <24h (%)'], prev['FiRT <24h (%)']) + "%", delta_color="normal")
-        c3.metric("SLA Resolución (<36hrs)", f"{curr['FuRT <36h (%)']:.2f}%", calc_delta_abs(curr['FuRT <36h (%)'], prev['FuRT <36h (%)']) + "%", delta_color="normal")
-        c4.metric("Ratio Reopen / Tickets", f"{curr['Ratio Reopen/Tickets (%)']:.2f}%", calc_delta_abs(curr['Ratio Reopen/Tickets (%)'], prev['Ratio Reopen/Tickets (%)']) + "%", delta_color="inverse")
-        
-        st.divider()
-        
-        # --- III. Calidad Canales Real Time ---
-        st.markdown("#### III. Calidad Gestión Canales Real Time")
-        c1, c2 = st.columns(2)
-        
-        if pd.notna(curr['% Llamadas Atendidas']):
-            c1.metric("% Llamadas Atendidas", f"{curr['% Llamadas Atendidas']:.2f}%", calc_delta_abs(curr['% Llamadas Atendidas'], prev['% Llamadas Atendidas']) + "%", delta_color="normal")
+        if not df_raw_filtered.empty and 'ES Output Tags 2nd Level v2' in df_raw_filtered.columns:
+            # Gráfico de Motivos Top 10
+            top_tags = df_raw_filtered['ES Output Tags 2nd Level v2'].value_counts().reset_index()
+            top_tags.columns = ['Motivo (Tag 2nd Level)', 'Volumen']
+            top_tags = top_tags.head(10)
+            
+            fig_tags = px.bar(top_tags, x='Volumen', y='Motivo (Tag 2nd Level)', orientation='h',
+                              title="Top 10 Motivos de Contacto", color_discrete_sequence=[CABIFY_SECONDARY])
+            fig_tags.update_layout(yaxis={'categoryorder':'total ascending'}, plot_bgcolor="white")
+            st.plotly_chart(fig_tags, use_container_width=True)
+            
+            st.markdown("#### Ejemplos Reales (Descripción del Usuario)")
+            st.caption("Muestra aleatoria de descripciones asociadas a estos tickets.")
+            if 'Description' in df_raw_filtered.columns:
+                sample_desc = df_raw_filtered[['ES Output Tags 2nd Level v2', 'Description']].dropna().sample(n=min(10, len(df_raw_filtered)))
+                st.dataframe(sample_desc, use_container_width=True)
         else:
-            c1.metric("% Llamadas Atendidas", "S/D")
-            
-        if pd.notna(curr['% Chats Atendidos']):
-            c2.metric("% Chats Atendidos", f"{curr['% Chats Atendidos']:.2f}%", calc_delta_abs(curr['% Chats Atendidos'], prev['% Chats Atendidos']) + "%", delta_color="normal")
-        else:
-            c2.metric("% Chats Atendidos", "S/D")
+            st.info("No hay suficientes datos de Output Tags para esta selección.")
