@@ -14,7 +14,7 @@ st.set_page_config(page_title="Cabify Support Dashboard", layout="wide", initial
 CABIFY_PURPLE = "#7352FF"
 CABIFY_SECONDARY = "#00D1A3"
 
-# Columnas Core (Agregamos Include_Contacts)
+# Columnas Core
 CORE_COLUMNS = [
     'Date_Time', 'Audience', 'Contact Type', 'NPS_Score', 'CSAT_Pct', 
     'FRT_Hours', 'FuRT_Hours', 'Reopen_Count', 'Tag_1', 'Tag_2', 
@@ -57,15 +57,11 @@ def standard_clean(df, mapping):
         if c in df.columns: df[c] = df[c].apply(parse_num)
     return df
 
-# --- CARGA DEL REPORTE GENERAL ---
+# --- CARGA DEL REPORTE MAESTRO (Nuevas Reglas de Negocio) ---
 @st.cache_data
 def load_main_data(filepath):
     df = read_csv_robust(filepath)
     df = df.loc[:, ~df.columns.duplicated()] 
-    
-    # 1. FILTRO ESTRICTO DE CONTACTOS (Validado internamente)
-    if 'Include Contacts' in df.columns:
-        df = df[df['Include Contacts'].astype(str).str.strip().str.lower() == 'rest']
     
     mapping = {
         'Date_Time': 'Date_Time', 'Audience': 'Audience', 'Contact Type': 'Contact Type',
@@ -74,56 +70,55 @@ def load_main_data(filepath):
         'ES Output Tags 1st Level v2': 'Tag_1', 'ES Output Tags 2nd Level v2': 'Tag_2', 
         'ES Output Tags 3rd Level v2': 'Tag_3', 'Chat Missed': 'Chat_Missed', 
         'Description': 'Description', 'Group name support': 'Group_Name',
-        'Include Contacts': 'Include_Contacts' # Lo traemos al estándar
+        'Include Contacts': 'Include_Contacts', 'Service Type': 'Service_Type'
     }
-    
     df = standard_clean(df, mapping)
     
-    if 'Audience' in df.columns:
+    # 1. Filtro General: Include Contacts y Service Type
+    if 'Include_Contacts' in df.columns:
+        df = df[df['Include_Contacts'].astype(str).str.strip().str.lower() == 'rest']
+    if 'Service_Type' in df.columns:
+        df = df[~df['Service_Type'].astype(str).str.lower().str.contains('delivery', na=False)]
+        
+    # 2. Asignación y Limpieza de Audiencias por Group Name
+    if 'Audience' in df.columns and 'Group_Name' in df.columns:
         df['Audience'] = df['Audience'].replace({'Private': 'Rider', 'C4B': 'B2B', 'Driver': 'Driver'})
-        df = df[df['Audience'].isin(['Rider', 'B2B', 'Driver'])]
         
-    if 'Group_Name' in df.columns:
-        mask = df['Group_Name'].astype(str).str.contains('emergencia', case=False, na=False)
-        df_em = df[mask].copy()
-        df_em['Audience'] = 'Emergencias'
-        df = pd.concat([df, df_em], ignore_index=True)
+        gn = df['Group_Name'].astype(str).str.strip()
+        gn_lower = gn.str.lower()
         
-    if 'Date_Time' in df.columns:
-        df['Date_Time'] = pd.to_datetime(df['Date_Time'], format='%d/%m/%Y', errors='coerce')
+        # Regla B2B
+        mask_b2b_base = df['Audience'] == 'B2B'
+        valid_b2b = ['[cl] b2b atención', '[tn] b2b atención', '[autoanswer]']
+        mask_b2b_valid = mask_b2b_base & gn_lower.isin(valid_b2b)
         
-    df = df.loc[:, ~df.columns.duplicated()]
-    final_cols = [c for c in CORE_COLUMNS if c in df.columns]
-    return df[final_cols].copy()
-
-# --- CARGA DEL REPORTE AEROPUERTO ---
-@st.cache_data
-def load_airport_data(filepath):
-    df = read_csv_robust(filepath)
-    df = df.loc[:, ~df.columns.duplicated()] 
-    
-    def determine_type(row):
-        if row.get('# Tickets - Call', 0) == 1: return 'Call'
-        if row.get('# Tickets - Chats', 0) == 1: return 'Chat'
-        return 'Ticket'
-    df['Contact Type'] = df.apply(determine_type, axis=1)
-    df['Audience'] = 'Aeropuerto'
-    
-    mapping = {
-        'Fecha de Referencia': 'Date_Time', 'Audience': 'Audience', 'Contact Type': 'Contact Type',
-        'NPS Score': 'NPS_Score', '% CSAT': 'CSAT_Pct', '# First Reply Time (Hours)': 'FRT_Hours',
-        '# Full Resolution Time (Hours)': 'FuRT_Hours', '# Tickets Reopen': 'Reopen_Count',
-        'ES Output Tags 1st Level v2': 'Tag_1', 'ES Output Tags 2nd Level v2': 'Tag_2', 
-        'ES Output Tags 3rd Level v2': 'Tag_3', 'Chat Missed': 'Chat_Missed', 
-        'Description': 'Description', 'Group name support': 'Group_Name',
-        'Include Contacts': 'Include_Contacts'
-    }
-    
-    df = standard_clean(df, mapping)
-    
-    # Nos aseguramos de inyectar 'Rest' si la base Aeropuerto no traía la columna
-    if 'Include_Contacts' not in df.columns:
-        df['Include_Contacts'] = 'Rest'
+        # Regla Rider / Driver
+        mask_rd_base = df['Audience'].isin(['Rider', 'Driver'])
+        invalid_contains = gn_lower.str.contains('admin|\[tn\] fraude|applicants support', regex=True)
+        invalid_starts = gn_lower.str.startswith(('[global]', '[co]', '[pe]', '[uy]', '[ar]', '[es]', '[cex]'))
+        invalid_null = gn_lower.isin(['null', 'nan', ''])
+        mask_rd_valid = mask_rd_base & ~invalid_contains & ~invalid_starts & ~invalid_null
+        
+        # Regla Emergencias
+        valid_em = [
+            '[tn] emergencias drivers', '[tn] energencias drivers', 
+            '[tn] emergencias rider', '[tn] energencias rider',
+            '[tn] emergencias', '[tn] energencias'
+        ]
+        mask_em = gn_lower.isin(valid_em)
+        
+        # Regla Aeropuerto
+        mask_aero = gn_lower == '[cl] aeropuerto local'
+        
+        # Aplicamos la nueva clasificación
+        df['Final_Audience'] = np.nan
+        df.loc[mask_rd_valid, 'Final_Audience'] = df.loc[mask_rd_valid, 'Audience']
+        df.loc[mask_b2b_valid, 'Final_Audience'] = 'B2B'
+        df.loc[mask_em, 'Final_Audience'] = 'Emergencias'
+        df.loc[mask_aero, 'Final_Audience'] = 'Aeropuerto'
+        
+        df = df.dropna(subset=['Final_Audience'])
+        df['Audience'] = df['Final_Audience']
         
     if 'Date_Time' in df.columns:
         df['Date_Time'] = pd.to_datetime(df['Date_Time'], format='%d/%m/%Y', errors='coerce')
@@ -355,22 +350,15 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
 
     return pdf.output(dest='S').encode('latin-1')
 
-# --- INTERFAZ ---
+# --- INTERFAZ PRINCIPAL ---
 st.markdown(f"<h1 style='color: {CABIFY_PURPLE};'>🚕 C_OPS Support Dashboard</h1>", unsafe_allow_html=True)
-st.write("Sube los archivos CSV para consolidar el reporte.")
+st.write("Sube el archivo general para procesar todas las audiencias (incluyendo Aeropuerto y Emergencias).")
 
-c_up1, c_up2 = st.columns(2)
-with c_up1:
-    file_main = st.file_uploader("1. Archivo General (Data Support)", type=['csv'])
-with c_up2:
-    file_airport = st.file_uploader("2. Archivo Aeropuerto (Firt Datos)", type=['csv'])
+file_main = st.file_uploader("Archivo Maestro (CSV)", type=['csv'])
 
-if file_main is not None and file_airport is not None:
-    with st.spinner('Filtrando Contactos (Solo Rest), limpiando y fusionando archivos...'):
-        df_main = load_main_data(file_main)
-        df_airport = load_airport_data(file_airport)
-        
-        df_raw = pd.concat([df_main, df_airport], ignore_index=True)
+if file_main is not None:
+    with st.spinner('Aplicando reglas de negocio exclusivas, limpiando y analizando datos...'):
+        df_raw = load_main_data(file_main)
         df_raw['Week'] = df_raw['Date_Time'].dt.isocalendar().week
         df_metrics = aggregate_weekly(df_raw)
     
@@ -421,7 +409,7 @@ if file_main is not None and file_airport is not None:
     
     with tab1:
         st.markdown("### 💬 Copiar Resumen para Slack")
-        st.info("Pasa el mouse sobre la caja de abajo y haz clic en el ícono de copiar para pegarlo en Slack.")
+        st.info("Pasa el mouse sobre la caja de abajo y haz clic en el ícono de copiar para pegarlo directamente en Slack.")
         slack_msg = generar_texto_slack(df_metrics, selected_week)
         st.code(slack_msg, language="markdown")
         st.divider()
