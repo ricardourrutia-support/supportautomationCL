@@ -74,13 +74,13 @@ def load_main_data(filepath):
     }
     df = standard_clean(df, mapping)
     
-    # Filtro General: Solo "Rest" y Excluir "Delivery"
+    # 1. Filtro General: Solo "Rest" y Excluir "Delivery"
     if 'Include_Contacts' in df.columns:
         df = df[df['Include_Contacts'].astype(str).str.strip().str.lower() == 'rest']
     if 'Service_Type' in df.columns:
         df = df[~df['Service_Type'].astype(str).str.lower().str.contains('delivery', na=False)]
         
-    # Asignación Estricta de Audiencias
+    # 2. Asignación Estricta de Audiencias
     if 'Audience' in df.columns and 'Group_Name' in df.columns:
         df['Audience'] = df['Audience'].replace({'Private': 'Rider', 'C4B': 'B2B', 'Driver': 'Driver'})
         gn = df['Group_Name'].astype(str).str.strip().str.lower()
@@ -126,8 +126,15 @@ def aggregate_weekly(df):
         res['Contactos Ticket'] = len(grp[grp['Contact Type'] == 'Ticket'])
         res['Contactos Chat'] = len(grp[grp['Contact Type'] == 'Chat'])
         res['Contactos Call'] = len(grp[grp['Contact Type'] == 'Call'])
-        res['NPS'] = grp['NPS_Score'].mean() if 'NPS_Score' in grp.columns else np.nan
         
+        # NPS Promedio y Cantidad de Encuestas
+        if 'NPS_Score' in grp.columns:
+            res['NPS'] = grp['NPS_Score'].mean()
+            res['NPS_Count'] = grp['NPS_Score'].count() # Nueva métrica
+        else: 
+            res['NPS'] = np.nan
+            res['NPS_Count'] = 0
+            
         csat = grp['CSAT_Pct'].mean() if 'CSAT_Pct' in grp.columns else np.nan
         res['CSAT (%)'] = csat * 100 if pd.notna(csat) and csat <= 1.0 else csat
         res['TMO (Hrs)'] = grp['FuRT_Hours'].mean() if 'FuRT_Hours' in grp.columns else np.nan
@@ -185,10 +192,10 @@ def analizar_detractores(df_raw, aud, week):
 # --- FUNCIÓN GENERADORA DE TEXTO SLACK ---
 def generar_texto_slack(df_metrics, week):
     lines = []
-    lines.append(f"📣 *C_OPS Weekly Update - Support - Semana {week}* 📣\n")
-    lines.append("📄 *Resumen Ejecutivo (PDF):* `[Pega el link a tu Drive aquí]`")
-    lines.append("📊 *Datos Crudos por Audiencias (Excel):* `[Pega el link a tu Drive aquí]`\n")
-    lines.append("*--- RESUMEN DE INDICADORES ---*\n")
+    lines.append(f"📣 C_OPS Weekly Update - Support - Semana {week} 📣\n")
+    lines.append("📄 Resumen Ejecutivo (PDF): [Pega el link a tu Drive aquí]")
+    lines.append("📊 Datos Crudos por Audiencias (Excel): [Pega el link a tu Drive aquí]\n")
+    lines.append("--- RESUMEN DE INDICADORES ---\n")
 
     audiences_in_week = df_metrics[df_metrics['Week'] == week]['Audience'].unique()
     iconos = {'Rider': '🚶', 'Driver': '🚘', 'B2B': '🏢', 'Emergencias': '🚑', 'Aeropuerto': '✈️'}
@@ -209,6 +216,7 @@ def generar_texto_slack(df_metrics, week):
         nps_curr = curr['NPS']
         nps_prev = prev['NPS']
         nps_wow = nps_curr - nps_prev
+        nps_count = curr.get('NPS_Count', 0)
 
         csat_curr = curr['CSAT (%)']
         csat_wow = csat_curr - prev['CSAT (%)']
@@ -217,16 +225,17 @@ def generar_texto_slack(df_metrics, week):
         reop_curr = curr['Ratio Reopen/Tickets (%)']
 
         icon = iconos.get(aud, '📊')
-        lines.append(f"*{icon} {aud.upper()}*")
-        lines.append(f"• *Volumen:* {vol_curr:,.0f} ({vol_wow:+.1f}% WoW)")
+        lines.append(f"{icon} {aud.upper()}")
+        lines.append(f"• Volumen: {vol_curr:,.0f} ({vol_wow:+.1f}% WoW)")
         
-        nps_str = f"{nps_curr:.1f} ({nps_wow:+.1f})" if pd.notna(nps_curr) else "S/D"
+        # Agregamos la cantidad de encuestas y quitamos los asteriscos
+        nps_str = f"{nps_curr:.1f} ({nps_wow:+.1f}) | {int(nps_count)} encuestas" if pd.notna(nps_curr) else "S/D"
         csat_str = f"{csat_curr:.1f}% ({csat_wow:+.1f}%)" if pd.notna(csat_curr) else "S/D"
-        lines.append(f"• *Calidad:* NPS {nps_str} | CSAT {csat_str}")
+        lines.append(f"• Calidad: NPS {nps_str} | CSAT {csat_str}")
         
         firt_str = f"{firt_curr:.1f}%" if pd.notna(firt_curr) else "S/D"
         reop_str = f"{reop_curr:.1f}%" if pd.notna(reop_curr) else "S/D"
-        lines.append(f"• *Eficiencia:* SLA 1ra Rsp: {firt_str} | Reopen: {reop_str}\n")
+        lines.append(f"• Eficiencia: SLA 1ra Rsp: {firt_str} | Reopen: {reop_str}\n")
 
     return "\n".join(lines)
 
@@ -243,7 +252,7 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
     def print_metric_line(label, val_str, delta_val, is_higher_better=True, is_pct=False):
         pdf.set_font("Arial", '', 10)
         pdf.set_text_color(0, 0, 0)
-        pdf.cell(50, 6, clean_txt(f"- {label}: {val_str}"), ln=0)
+        pdf.cell(55, 6, clean_txt(f"- {label}: {val_str}"), ln=0) # Ampliamos un poco el margen para que quepa el texto
         
         if pd.isna(delta_val) or delta_val == 0:
             pdf.set_text_color(150, 150, 150)
@@ -282,9 +291,12 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
             csat_diff = curr['CSAT (%)'] - prev['CSAT (%)']
             firt_diff = curr['FiRT <24h (%)'] - prev['FiRT <24h (%)']
             reop_diff = curr['Ratio Reopen/Tickets (%)'] - prev['Ratio Reopen/Tickets (%)']
+            
+            nps_count = curr.get('NPS_Count', 0)
+            nps_val_str = f"{curr['NPS']:.1f} ({int(nps_count)} encuestas)" if pd.notna(curr['NPS']) else "S/D"
 
             print_metric_line("Volumen", f"{curr['Contactos Recibidos']:,.0f}", vol_pct, is_higher_better=False, is_pct=True)
-            print_metric_line("NPS Score", f"{curr['NPS']:.1f}", nps_diff, is_higher_better=True, is_pct=False)
+            print_metric_line("NPS Score", nps_val_str, nps_diff, is_higher_better=True, is_pct=False)
             print_metric_line("CSAT (%)", f"{curr['CSAT (%)']:.1f}%", csat_diff, is_higher_better=True, is_pct=True)
             print_metric_line("FiRT <24h", f"{curr['FiRT <24h (%)']:.1f}%", firt_diff, is_higher_better=True, is_pct=True)
             print_metric_line("Ratio Reopen", f"{curr['Ratio Reopen/Tickets (%)']:.1f}%", reop_diff, is_higher_better=False, is_pct=True)
@@ -346,7 +358,7 @@ st.write("Sube el archivo general para procesar todas las audiencias.")
 file_main = st.file_uploader("Archivo Maestro (CSV)", type=['csv'])
 
 if file_main is not None:
-    with st.spinner('Aplicando reglas de negocio exclusivas, limpiando y analizando datos...'):
+    with st.spinner('Aplicando reglas de negocio, limpiando y analizando datos...'):
         df_raw = load_main_data(file_main)
         df_raw['Week'] = df_raw['Date_Time'].dt.isocalendar().week
         df_metrics = aggregate_weekly(df_raw)
@@ -379,9 +391,7 @@ if file_main is not None:
     st.sidebar.subheader("📥 Exportar Datos Crudos")
     
     if 'NPS_Score' in df_raw.columns:
-        # AQUÍ ESTÁ EL CAMBIO: Filtramos por la semana seleccionada
         df_valid_nps = df_raw[(df_raw['NPS_Score'].notna()) & (df_raw['Week'] == selected_week)]
-        
         if not df_valid_nps.empty:
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -402,7 +412,7 @@ if file_main is not None:
     
     with tab1:
         st.markdown("### 💬 Copiar Resumen para Slack")
-        st.info("Pasa el mouse sobre la caja de abajo y haz clic en el ícono de copiar para pegarlo directamente en Slack.")
+        st.info("Pasa el mouse sobre la caja de abajo y haz clic en el ícono de copiar para pegarlo en Slack.")
         slack_msg = generar_texto_slack(df_metrics, selected_week)
         st.code(slack_msg, language="markdown")
         st.divider()
@@ -432,7 +442,8 @@ if file_main is not None:
             with c4: st.metric("Contactos Call", f"{curr['Contactos Call']:,.0f}", calc_delta_pct(curr['Contactos Call'], prev['Contactos Call']), delta_color="inverse")
             
             c5, c6, c7 = st.columns(3)
-            with c5: st.metric("NPS Score", f"{curr['NPS']:.2f}", calc_delta_abs(curr['NPS'], prev['NPS']), delta_color="normal")
+            # Globo de ayuda visual (help) con el conteo de NPS
+            with c5: st.metric("NPS Score", f"{curr['NPS']:.2f}", calc_delta_abs(curr['NPS'], prev['NPS']), delta_color="normal", help=f"Basado en {int(curr.get('NPS_Count', 0))} encuestas esta semana")
             with c6: st.metric("CSAT", f"{curr['CSAT (%)']:.1f}%", calc_delta_abs(curr['CSAT (%)'], prev['CSAT (%)']) + "%", delta_color="normal")
             
             st.divider()
