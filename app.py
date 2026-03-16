@@ -25,12 +25,10 @@ def load_and_clean_data(filepath):
     df = df[df['Audience'].isin(['Rider', 'B2B', 'Driver'])]
     
     # 2. NUEVA AUDIENCIA: EMERGENCIAS
-    # Buscamos cualquier fila donde el grupo de soporte contenga "emergencia" (case insensitive)
     mask_emergencias = df['Group name support'].astype(str).str.contains('emergencia', case=False, na=False)
     df_emergencias = df[mask_emergencias].copy()
-    df_emergencias['Audience'] = 'Emergencias' # Re-etiquetamos la copia
+    df_emergencias['Audience'] = 'Emergencias'
     
-    # Unimos la nueva audiencia al dataset original
     df = pd.concat([df, df_emergencias], ignore_index=True)
     
     # 3. Fechas y Semanas
@@ -65,7 +63,6 @@ def load_and_clean_data(filepath):
 def aggregate_weekly(df):
     def aggs(grp):
         res = {}
-        # I. Performance General
         res['Contactos Recibidos'] = len(grp)
         res['Contactos Ticket'] = len(grp[grp['Contact Type'] == 'Ticket'])
         res['Contactos Chat'] = len(grp[grp['Contact Type'] == 'Chat'])
@@ -75,7 +72,6 @@ def aggregate_weekly(df):
         csat = grp['% CSAT'].mean()
         res['CSAT (%)'] = csat * 100 if pd.notna(csat) and csat <= 1.0 else csat
         
-        # II. Calidad Gestión Tickets
         res['TMO (Hrs)'] = grp['# Full Resolution Time (Hours)'].mean()
         
         valid_frt = grp['# First Reply Time (Hours)'].dropna()
@@ -87,7 +83,6 @@ def aggregate_weekly(df):
         reopens = grp['#\xa0Tickets con reopen'].sum()
         res['Ratio Reopen/Tickets (%)'] = (reopens / res['Contactos Ticket'] * 100) if res['Contactos Ticket'] > 0 else 0
         
-        # III. Calidad Gestión Canales Real Time
         calls = grp[grp['Contact Type'] == 'Call']
         total_calls = len(calls)
         if total_calls > 0:
@@ -152,7 +147,6 @@ if uploaded_file is not None:
     tab1, tab2 = st.tabs(["📈 KPIs Semanales y Tendencias", "🔍 Deep Dive (Motivos de Contacto)"])
     
     with tab1:
-        # CÁLCULOS WOW (WEEK OVER WEEK)
         current_data = df_filtered[df_filtered['Week'] == selected_week]
         prev_data = df_filtered[df_filtered['Week'] == selected_week - 1]
         
@@ -227,26 +221,27 @@ if uploaded_file is not None:
                 st.plotly_chart(fig_nps, use_container_width=True)
 
     with tab2:
-        st.markdown(f"### 🔍 Deep Dive: Motivos de Contacto ({selected_audience} - Sem {selected_week})")
-        st.write("Análisis de las etiquetas de salida (Output Tags) para identificar principales puntos de dolor.")
+        st.markdown(f"### 🔍 Deep Dive: Motivos de Contacto Nivel 3 ({selected_audience} - Sem {selected_week})")
+        st.write("Análisis detallado de las etiquetas de Nivel 3 (Output Tags 3rd Level) para identificar la causa raíz exacta de los contactos.")
         
         df_raw_filtered = df_raw[(df_raw['Audience'] == selected_audience) & (df_raw['Week'] == selected_week)]
         
-        if not df_raw_filtered.empty and 'ES Output Tags 2nd Level v2' in df_raw_filtered.columns:
-            # Gráfico de Motivos Top 10
-            top_tags = df_raw_filtered['ES Output Tags 2nd Level v2'].value_counts().reset_index()
-            top_tags.columns = ['Motivo (Tag 2nd Level)', 'Volumen']
+        if not df_raw_filtered.empty and 'ES Output Tags 3rd Level v2' in df_raw_filtered.columns:
+            # Gráfico de Motivos Top 10 basados en Nivel 3
+            top_tags = df_raw_filtered['ES Output Tags 3rd Level v2'].value_counts().reset_index()
+            top_tags.columns = ['Motivo (Tag 3er Nivel)', 'Volumen']
             top_tags = top_tags.head(10)
             
-            fig_tags = px.bar(top_tags, x='Volumen', y='Motivo (Tag 2nd Level)', orientation='h',
-                              title="Top 10 Motivos de Contacto", color_discrete_sequence=[CABIFY_SECONDARY])
+            fig_tags = px.bar(top_tags, x='Volumen', y='Motivo (Tag 3er Nivel)', orientation='h',
+                              title="Top 10 Motivos de Contacto (Granularidad Nivel 3)", color_discrete_sequence=[CABIFY_SECONDARY])
             fig_tags.update_layout(yaxis={'categoryorder':'total ascending'}, plot_bgcolor="white")
             st.plotly_chart(fig_tags, use_container_width=True)
             
             st.markdown("#### Ejemplos Reales (Descripción del Usuario)")
-            st.caption("Muestra aleatoria de descripciones asociadas a estos tickets.")
+            st.caption("Muestra aleatoria de descripciones asociadas a estos tickets hiper-segmentados.")
             if 'Description' in df_raw_filtered.columns:
-                sample_desc = df_raw_filtered[['ES Output Tags 2nd Level v2', 'Description']].dropna().sample(n=min(10, len(df_raw_filtered)))
+                # Tomamos una muestra aleatoria para no saturar la pantalla, validando que existan datos
+                sample_desc = df_raw_filtered[['ES Output Tags 3rd Level v2', 'Description']].dropna().sample(n=min(10, len(df_raw_filtered)))
                 st.dataframe(sample_desc, use_container_width=True)
         else:
-            st.info("No hay suficientes datos de Output Tags para esta selección.")
+            st.info("No hay suficientes datos de Output Tags de 3er Nivel para esta selección.")
