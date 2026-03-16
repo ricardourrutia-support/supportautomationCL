@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import io
+from fpdf import FPDF
 
 # Configuración estilo Cabify Minimalista
 st.set_page_config(page_title="Cabify Support Dashboard", layout="wide", initial_sidebar_state="expanded")
@@ -12,7 +13,6 @@ CABIFY_SECONDARY = "#00D1A3"
 # --- FUNCIONES DE CARGA Y LIMPIEZA ---
 @st.cache_data
 def load_and_clean_data(filepath):
-    # Intentamos primero con punto y coma, si falla el formato, intentamos con coma
     df = pd.read_csv(filepath, delimiter=';')
     if 'Date_Time' not in df.columns:
         filepath.seek(0)
@@ -20,37 +20,27 @@ def load_and_clean_data(filepath):
         
     df.columns = df.columns.str.strip()
     
-    # 1. Filtro y mapeo de Audiencias base
     df['Audience'] = df['Audience'].replace({'Private': 'Rider', 'C4B': 'B2B', 'Driver': 'Driver'})
     df = df[df['Audience'].isin(['Rider', 'B2B', 'Driver'])]
     
-    # 2. NUEVA AUDIENCIA: EMERGENCIAS
     mask_emergencias = df['Group name support'].astype(str).str.contains('emergencia', case=False, na=False)
     df_emergencias = df[mask_emergencias].copy()
-    df_emergencias['Audience'] = 'Emergencias'
+    df_emergencias['Audience'] = 'Emergencias' 
     
     df = pd.concat([df, df_emergencias], ignore_index=True)
     
-    # 3. Fechas y Semanas
     df['Date_Time'] = pd.to_datetime(df['Date_Time'], format='%d/%m/%Y', errors='coerce')
     df['Week'] = df['Date_Time'].dt.isocalendar().week
     
     def parse_num(s):
         if pd.isna(s): return np.nan
         s = str(s).strip().replace('%', '')
-        if '.' in s and ',' in s:
-            s = s.replace('.', '').replace(',', '.')
-        elif ',' in s:
-            s = s.replace(',', '.')
-        try:
-            return float(s)
-        except:
-            return np.nan
+        if '.' in s and ',' in s: s = s.replace('.', '').replace(',', '.')
+        elif ',' in s: s = s.replace(',', '.')
+        try: return float(s)
+        except: return np.nan
 
-    # 4. Limpieza de columnas numéricas
-    cols_to_clean = ['% CSAT', '# First Reply Time (Hours)', 
-                     '# Full Resolution Time (Hours)', '#\xa0Tickets con reopen', 'NPS Score']
-                     
+    cols_to_clean = ['% CSAT', '# First Reply Time (Hours)', '# Full Resolution Time (Hours)', '#\xa0Tickets con reopen', 'NPS Score']
     for col in cols_to_clean:
         matched_col = next((c for c in df.columns if col.replace(' ', '') in c.replace(' ', '')), None)
         if matched_col:
@@ -71,7 +61,6 @@ def aggregate_weekly(df):
         res['NPS'] = grp['NPS Score'].mean()
         csat = grp['% CSAT'].mean()
         res['CSAT (%)'] = csat * 100 if pd.notna(csat) and csat <= 1.0 else csat
-        
         res['TMO (Hrs)'] = grp['# Full Resolution Time (Hours)'].mean()
         
         valid_frt = grp['# First Reply Time (Hours)'].dropna()
@@ -84,24 +73,70 @@ def aggregate_weekly(df):
         res['Ratio Reopen/Tickets (%)'] = (reopens / res['Contactos Ticket'] * 100) if res['Contactos Ticket'] > 0 else 0
         
         calls = grp[grp['Contact Type'] == 'Call']
-        total_calls = len(calls)
-        if total_calls > 0:
-            missed_calls = calls['ES Output Tags 2nd Level v2'].astype(str).str.contains('talkdesk', case=False).sum()
-            res['% Llamadas Atendidas'] = ((total_calls - missed_calls) / total_calls) * 100
-        else:
-            res['% Llamadas Atendidas'] = np.nan
+        if len(calls) > 0:
+            res['% Llamadas Atendidas'] = ((len(calls) - calls['ES Output Tags 2nd Level v2'].astype(str).str.contains('talkdesk', case=False).sum()) / len(calls)) * 100
+        else: res['% Llamadas Atendidas'] = np.nan
             
         chats = grp[grp['Contact Type'] == 'Chat']
-        total_chats = len(chats)
-        if total_chats > 0 and 'Chat Missed' in grp.columns:
-            missed_chats = chats['Chat Missed'].sum() 
-            res['% Chats Atendidos'] = ((total_chats - missed_chats) / total_chats) * 100
-        else:
-            res['% Chats Atendidos'] = np.nan
+        if len(chats) > 0 and 'Chat Missed' in grp.columns:
+            res['% Chats Atendidos'] = ((len(chats) - chats['Chat Missed'].sum()) / len(chats)) * 100
+        else: res['% Chats Atendidos'] = np.nan
             
         return pd.Series(res)
-
     return df.groupby(['Week', 'Audience']).apply(aggs).reset_index()
+
+# --- FUNCIÓN GENERADORA DE PDF ---
+def generar_pdf_resumen(df_metrics, week):
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Función auxiliar para limpiar caracteres latinos y evitar errores en FPDF
+    def clean_txt(text):
+        return text.encode('latin-1', 'replace').decode('latin-1')
+        
+    pdf.set_font("Arial", 'B', 16)
+    pdf.set_text_color(115, 82, 255) # Cabify Purple
+    pdf.cell(0, 10, clean_txt(f"Resumen Ejecutivo C_OPS - Semana {week}"), ln=True, align='C')
+    pdf.ln(5)
+
+    for aud in ['Driver', 'Rider', 'B2B', 'Emergencias']:
+        curr_df = df_metrics[(df_metrics['Audience'] == aud) & (df_metrics['Week'] == week)]
+        prev_df = df_metrics[(df_metrics['Audience'] == aud) & (df_metrics['Week'] == week - 1)]
+
+        if not curr_df.empty:
+            curr = curr_df.iloc[0]
+            prev = prev_df.iloc[0] if not prev_df.empty else curr * 0
+
+            pdf.set_font("Arial", 'B', 12)
+            pdf.set_text_color(0, 0, 0)
+            pdf.cell(0, 8, clean_txt(f"Audiencia: {aud}"), ln=True)
+
+            pdf.set_font("Arial", '', 10)
+            vol_pct = ((curr['Contactos Recibidos'] - prev['Contactos Recibidos']) / prev['Contactos Recibidos'] * 100) if prev['Contactos Recibidos'] else 0
+            nps_diff = curr['NPS'] - prev['NPS']
+
+            # Escribir Métricas
+            pdf.cell(0, 6, clean_txt(f"- Volumen: {curr['Contactos Recibidos']:,.0f} ({vol_pct:+.1f}% WoW)"), ln=True)
+            pdf.cell(0, 6, clean_txt(f"- Calidad: NPS {curr['NPS']:.1f} ({nps_diff:+.1f} WoW) | CSAT {curr['CSAT (%)']:.1f}%"), ln=True)
+            pdf.cell(0, 6, clean_txt(f"- Eficiencia: FiRT <24h {curr['FiRT <24h (%)']:.1f}% | Reopen {curr['Ratio Reopen/Tickets (%)']:.1f}%"), ln=True)
+
+            # Generar Insight Automático
+            insight = "Insight: "
+            if vol_pct > 10: insight += "Fuerte aumento de volumen. "
+            elif vol_pct < -10: insight += "Caida de volumen que desahoga la operacion. "
+            else: insight += "Volumen estable. "
+
+            if nps_diff <= -5: insight += "Alerta por caida de NPS. Requiere revisar Output Tags. "
+            elif nps_diff >= 5: insight += "Mejora significativa en la experiencia del usuario. "
+            
+            if curr['Ratio Reopen/Tickets (%)'] > 12: insight += "Alto Reopen rate, atacar calidad de primera resolucion."
+
+            pdf.set_text_color(0, 209, 163) # Cabify Secondary
+            pdf.multi_cell(0, 6, clean_txt(insight))
+            pdf.set_text_color(0, 0, 0)
+            pdf.ln(5)
+
+    return pdf.output(dest='S').encode('latin-1')
 
 # --- INTERFAZ ---
 st.markdown(f"<h1 style='color: {CABIFY_PURPLE};'>🚕 C_OPS Support Dashboard</h1>", unsafe_allow_html=True)
@@ -112,7 +147,7 @@ if uploaded_file is not None:
     df_raw = load_and_clean_data(uploaded_file)
     df_metrics = aggregate_weekly(df_raw)
     
-    st.sidebar.markdown(f"<h3 style='color: {CABIFY_PURPLE};'>Filtros Globales</h3>", unsafe_allow_html=True)
+    st.sidebar.markdown(f"<h3 style='color: {CABIFY_PURPLE};'>Filtros y Descargas</h3>", unsafe_allow_html=True)
     all_audiences = ['Rider', 'Driver', 'B2B', 'Emergencias']
     audiences = [a for a in all_audiences if a in df_metrics['Audience'].unique()]
     
@@ -123,11 +158,22 @@ if uploaded_file is not None:
     selected_week = st.sidebar.selectbox("Selecciona la Semana a visualizar", available_weeks, index=0)
     
     # -------------------------------------------------------------
+    # NUEVO: EXPORTAR RESUMEN EJECUTIVO EN PDF
+    st.sidebar.divider()
+    st.sidebar.subheader("📄 Reporte Directivo (PDF)")
+    st.sidebar.caption("Descarga el resumen escrito de todas las audiencias para la semana seleccionada.")
+    pdf_bytes = generar_pdf_resumen(df_metrics, selected_week)
+    st.sidebar.download_button(
+        label="Descargar Executive Summary (.pdf)",
+        data=pdf_bytes,
+        file_name=f"COPS_Executive_Summary_W{selected_week}.pdf",
+        mime="application/pdf"
+    )
+
+    # -------------------------------------------------------------
     # EXPORTAR EXCEL NPS VÁLIDO
     st.sidebar.divider()
     st.sidebar.subheader("📥 Exportar Datos Crudos")
-    st.sidebar.caption("Descarga un Excel separado por pestañas filtrando solo registros con NPS válido.")
-    
     df_valid_nps = df_raw.dropna(subset=['NPS Score'])
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -135,7 +181,6 @@ if uploaded_file is not None:
             df_aud = df_valid_nps[df_valid_nps['Audience'] == aud]
             if not df_aud.empty:
                 df_aud.to_excel(writer, sheet_name=aud, index=False)
-    
     st.sidebar.download_button(
         label="Descargar Reporte NPS (.xlsx)",
         data=output.getvalue(),
@@ -144,7 +189,7 @@ if uploaded_file is not None:
     )
     
     # --- TABS PARA EL DASHBOARD ---
-    tab1, tab2 = st.tabs(["📈 KPIs Semanales y Tendencias", "🔍 Deep Dive (Motivos de Contacto)"])
+    tab1, tab2 = st.tabs(["📈 KPIs Semanales y Tendencias", "🔍 Deep Dive (Motivos 3er Nivel)"])
     
     with tab1:
         current_data = df_filtered[df_filtered['Week'] == selected_week]
@@ -163,9 +208,7 @@ if uploaded_file is not None:
                 return f"{current - previous:+.2f}"
                 
             st.markdown(f"### Resumen Semana **{selected_week}** - {selected_audience}")
-            st.caption("Los indicadores en color **verde** o **rojo** representan la variación WoW respecto a la semana anterior.")
             
-            # --- I. Performance General ---
             st.markdown("#### I. Performance General de Gestión")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Contactos Recibidos", f"{curr['Contactos Recibidos']:,.0f}", calc_delta_pct(curr['Contactos Recibidos'], prev['Contactos Recibidos']), delta_color="inverse")
@@ -179,7 +222,6 @@ if uploaded_file is not None:
             
             st.divider()
             
-            # --- II. Calidad Gestión Tickets ---
             st.markdown("#### II. Calidad Gestión de Tickets")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("TMO Promedio (Hrs)", f"{curr['TMO (Hrs)']:.2f}", calc_delta_abs(curr['TMO (Hrs)'], prev['TMO (Hrs)']), delta_color="inverse")
@@ -189,21 +231,16 @@ if uploaded_file is not None:
             
             st.divider()
             
-            # --- III. Calidad Canales Real Time ---
             st.markdown("#### III. Calidad Gestión Canales Real Time")
             c1, c2 = st.columns(2)
-            
             if pd.notna(curr['% Llamadas Atendidas']):
                 c1.metric("% Llamadas Atendidas", f"{curr['% Llamadas Atendidas']:.2f}%", calc_delta_abs(curr['% Llamadas Atendidas'], prev['% Llamadas Atendidas']) + "%", delta_color="normal")
-            else:
-                c1.metric("% Llamadas Atendidas", "S/D")
-                
+            else: c1.metric("% Llamadas Atendidas", "S/D")
             if pd.notna(curr['% Chats Atendidos']):
                 c2.metric("% Chats Atendidos", f"{curr['% Chats Atendidos']:.2f}%", calc_delta_abs(curr['% Chats Atendidos'], prev['% Chats Atendidos']) + "%", delta_color="normal")
-            else:
-                c2.metric("% Chats Atendidos", "S/D")
+            else: c2.metric("% Chats Atendidos", "S/D")
 
-            # --- GRÁFICOS DE TENDENCIA ---
+            # --- GRÁFICOS DE TENDENCIA (SUAVIZADOS) ---
             st.divider()
             st.markdown("#### 📈 Evolución Histórica")
             col_g1, col_g2 = st.columns(2)
@@ -212,36 +249,33 @@ if uploaded_file is not None:
                 fig_vol = px.line(df_filtered, x='Week', y='Contactos Recibidos', markers=True, 
                                   title="Volumen de Contactos", color_discrete_sequence=[CABIFY_PURPLE])
                 fig_vol.update_layout(plot_bgcolor="white", xaxis_title="Semana", yaxis_title="Contactos")
+                # Suavizamos gráfico de volumen anclándolo a 0
+                fig_vol.update_yaxes(rangemode="tozero")
                 st.plotly_chart(fig_vol, use_container_width=True)
                 
             with col_g2:
                 fig_nps = px.line(df_filtered, x='Week', y=['NPS', 'CSAT (%)'], markers=True,
                                   title="Experiencia y Calidad", color_discrete_sequence=[CABIFY_PURPLE, CABIFY_SECONDARY])
                 fig_nps.update_layout(plot_bgcolor="white", xaxis_title="Semana", yaxis_title="Score / %")
+                # Fijamos escala entre -100 y 100 para evitar saltos drásticos en variaciones pequeñas
+                fig_nps.update_yaxes(range=[-100, 100])
                 st.plotly_chart(fig_nps, use_container_width=True)
 
     with tab2:
         st.markdown(f"### 🔍 Deep Dive: Motivos de Contacto Nivel 3 ({selected_audience} - Sem {selected_week})")
-        st.write("Análisis detallado de las etiquetas de Nivel 3 (Output Tags 3rd Level) para identificar la causa raíz exacta de los contactos.")
-        
         df_raw_filtered = df_raw[(df_raw['Audience'] == selected_audience) & (df_raw['Week'] == selected_week)]
         
         if not df_raw_filtered.empty and 'ES Output Tags 3rd Level v2' in df_raw_filtered.columns:
-            # Gráfico de Motivos Top 10 basados en Nivel 3
             top_tags = df_raw_filtered['ES Output Tags 3rd Level v2'].value_counts().reset_index()
             top_tags.columns = ['Motivo (Tag 3er Nivel)', 'Volumen']
             top_tags = top_tags.head(10)
             
             fig_tags = px.bar(top_tags, x='Volumen', y='Motivo (Tag 3er Nivel)', orientation='h',
-                              title="Top 10 Motivos de Contacto (Granularidad Nivel 3)", color_discrete_sequence=[CABIFY_SECONDARY])
+                              color_discrete_sequence=[CABIFY_SECONDARY])
             fig_tags.update_layout(yaxis={'categoryorder':'total ascending'}, plot_bgcolor="white")
             st.plotly_chart(fig_tags, use_container_width=True)
             
             st.markdown("#### Ejemplos Reales (Descripción del Usuario)")
-            st.caption("Muestra aleatoria de descripciones asociadas a estos tickets hiper-segmentados.")
             if 'Description' in df_raw_filtered.columns:
-                # Tomamos una muestra aleatoria para no saturar la pantalla, validando que existan datos
                 sample_desc = df_raw_filtered[['ES Output Tags 3rd Level v2', 'Description']].dropna().sample(n=min(10, len(df_raw_filtered)))
                 st.dataframe(sample_desc, use_container_width=True)
-        else:
-            st.info("No hay suficientes datos de Output Tags de 3er Nivel para esta selección.")
