@@ -21,7 +21,7 @@ CORE_COLUMNS = [
     'Tag_3', 'Chat_Missed', 'Description', 'Group_Name'
 ]
 
-# --- LECTOR ROBUSTO DE CSV (Anti-Errores de Parser y Formato) ---
+# --- LECTOR ROBUSTO DE CSV ---
 def read_csv_robust(filepath):
     encodings_to_try = ['utf-8-sig', 'utf-8', 'latin-1']
     delimiters_to_try = [';', ',']
@@ -30,19 +30,17 @@ def read_csv_robust(filepath):
         for sep in delimiters_to_try:
             try:
                 filepath.seek(0)
-                # on_bad_lines='skip' evita el ParserError saltando filas corruptas
                 df = pd.read_csv(filepath, delimiter=sep, low_memory=False, encoding=enc, on_bad_lines='skip')
-                # Si logró separar en más de 1 columna, asumimos éxito
                 if len(df.columns) > 1:
-                    df.columns = df.columns.str.strip()
+                    # Limpieza maestra de espacios fantasmas en los títulos
+                    df.columns = df.columns.str.strip().str.replace('\xa0', ' ')
                     return df
             except Exception:
                 continue
                 
-    # Fallback extremo
     filepath.seek(0)
     df = pd.read_csv(filepath, delimiter=';', low_memory=False, encoding='latin-1', on_bad_lines='skip')
-    df.columns = df.columns.str.strip()
+    df.columns = df.columns.str.strip().str.replace('\xa0', ' ')
     return df
 
 def parse_num(s):
@@ -66,10 +64,11 @@ def load_main_data(filepath):
     df = read_csv_robust(filepath)
     df = df.loc[:, ~df.columns.duplicated()] 
     
+    # Mapeo corregido sin espacios fantasmas
     mapping = {
         'Date_Time': 'Date_Time', 'Audience': 'Audience', 'Contact Type': 'Contact Type',
-        'NPS Score': 'NPS_Score', '% CSAT': 'CSAT_Pct', '# First Reply Time (Hours) ': 'FRT_Hours',
-        '# Full Resolution Time (Hours)': 'FuRT_Hours', '#\xa0Tickets con reopen': 'Reopen_Count',
+        'NPS Score': 'NPS_Score', '% CSAT': 'CSAT_Pct', '# First Reply Time (Hours)': 'FRT_Hours',
+        '# Full Resolution Time (Hours)': 'FuRT_Hours', '# Tickets con reopen': 'Reopen_Count',
         'ES Output Tags 1st Level v2': 'Tag_1', 'ES Output Tags 2nd Level v2': 'Tag_2', 
         'ES Output Tags 3rd Level v2': 'Tag_3', 'Chat Missed': 'Chat_Missed', 
         'Description': 'Description', 'Group name support': 'Group_Name'
@@ -143,6 +142,7 @@ def aggregate_weekly(df):
         
         valid_res = grp['FuRT_Hours'].dropna() if 'FuRT_Hours' in grp.columns else pd.Series()
         res['FuRT <36h (%)'] = (valid_res < 36).mean() * 100 if len(valid_res) > 0 else np.nan
+        
         valid_frt = grp['FRT_Hours'].dropna() if 'FRT_Hours' in grp.columns else pd.Series()
         res['FiRT <24h (%)'] = (valid_frt < 24).mean() * 100 if len(valid_frt) > 0 else np.nan
         
@@ -249,7 +249,6 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
             print_metric_line("FiRT <24h", f"{curr['FiRT <24h (%)']:.1f}%", firt_diff, is_higher_better=True, is_pct=True)
             print_metric_line("Ratio Reopen", f"{curr['Ratio Reopen/Tickets (%)']:.1f}%", reop_diff, is_higher_better=False, is_pct=True)
 
-            # Gráfico PDF
             df_trend = df_metrics[df_metrics['Audience'] == aud].sort_values('Week')
             if len(df_trend) > 1:
                 img_path = f"trend_{aud}.png"
@@ -278,13 +277,12 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
                     os.remove(img_path)
                 except Exception: pass
 
-            # Análisis Narrativo de Detractores
             insight_nps = analizar_detractores(df_raw, aud, week)
             pdf.ln(2)
             if "Excelente" in insight_nps:
-                pdf.set_text_color(0, 209, 163) # Verde
+                pdf.set_text_color(0, 209, 163)
             else:
-                pdf.set_text_color(255, 82, 82) # Rojo
+                pdf.set_text_color(255, 82, 82)
             
             pdf.set_font("Arial", 'I', 9)
             pdf.multi_cell(0, 5, clean_txt(insight_nps))
@@ -325,7 +323,6 @@ if file_main is not None and file_airport is not None:
     available_weeks = sorted(df_filtered['Week'].dropna().unique(), reverse=True)
     selected_week = st.sidebar.selectbox("Selecciona la Semana a visualizar", available_weeks, index=0)
     
-    # EXPORTAR RESUMEN EJECUTIVO EN PDF
     st.sidebar.divider()
     st.sidebar.subheader("📄 Reporte Directivo (PDF)")
     st.sidebar.caption("Descarga el resumen de todas las audiencias con código de color, gráficos evolutivos y análisis narrativo de detractores.")
@@ -338,7 +335,6 @@ if file_main is not None and file_airport is not None:
         mime="application/pdf"
     )
 
-    # EXPORTAR EXCEL NPS VÁLIDO
     st.sidebar.divider()
     st.sidebar.subheader("📥 Exportar Datos Crudos")
     
@@ -358,7 +354,6 @@ if file_main is not None and file_airport is not None:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
     
-    # --- TABS PARA EL DASHBOARD ---
     tab1, tab2 = st.tabs(["📈 KPIs Semanales y Tendencias", "🔍 Deep Dive (Análisis de Detractores)"])
     
     with tab1:
