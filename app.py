@@ -6,7 +6,7 @@ import io
 import os
 from fpdf import FPDF
 import matplotlib
-matplotlib.use('Agg') # Forza a Matplotlib a ejecutarse en segundo plano (sin abrir ventanas emergentes)
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # Configuración estilo Cabify Minimalista
@@ -14,11 +14,12 @@ st.set_page_config(page_title="Cabify Support Dashboard", layout="wide", initial
 CABIFY_PURPLE = "#7352FF"
 CABIFY_SECONDARY = "#00D1A3"
 
-# Columnas Core
+# Columnas Core (Agregamos los nuevos atributos para auditoría)
 CORE_COLUMNS = [
     'Date_Time', 'Audience', 'Contact Type', 'NPS_Score', 'CSAT_Pct', 
     'FRT_Hours', 'FuRT_Hours', 'Reopen_Count', 'Tag_1', 'Tag_2', 
-    'Tag_3', 'Chat_Missed', 'Description', 'Group_Name', 'Include_Contacts', 'Service_Type'
+    'Tag_3', 'Chat_Missed', 'Description', 'Group_Name', 'Include_Contacts', 'Service_Type',
+    'Assignee_Email', 'Assignee_FullName', 'Ticket_Number'
 ]
 
 # --- LECTOR ROBUSTO DE CSV ---
@@ -57,7 +58,7 @@ def standard_clean(df, mapping):
         if c in df.columns: df[c] = df[c].apply(parse_num)
     return df
 
-# --- CARGA DEL REPORTE MAESTRO (Un Solo Archivo) ---
+# --- CARGA DEL REPORTE MAESTRO ---
 @st.cache_data
 def load_main_data(filepath):
     df = read_csv_robust(filepath)
@@ -70,7 +71,8 @@ def load_main_data(filepath):
         'ES Output Tags 1st Level v2': 'Tag_1', 'ES Output Tags 2nd Level v2': 'Tag_2', 
         'ES Output Tags 3rd Level v2': 'Tag_3', 'Chat Missed': 'Chat_Missed', 
         'Description': 'Description', 'Group name support': 'Group_Name',
-        'Include Contacts': 'Include_Contacts', 'Service Type': 'Service_Type'
+        'Include Contacts': 'Include_Contacts', 'Service Type': 'Service_Type',
+        'Assignee Email': 'Assignee_Email', 'Assignee FullName': 'Assignee_FullName', 'Ticket Number': 'Ticket_Number'
     }
     df = standard_clean(df, mapping)
     
@@ -182,11 +184,11 @@ def analizar_detractores(df_raw, aud, week):
     resumen += f"A nivel macro (Tag 1), la friccion principal esta en '{t1}'. "
     resumen += f"Al profundizar, los usuarios reportan mayormente problemas de '{t2}' (Tag 2), y de forma muy especifica se quejan de '{t3}' (Tag 3). "
     if desc_sample:
-        resumen += f"Un ejemplo de la voz del cliente indica: \"{desc_sample}\""
+        resumen += f"Un ejemplo literal de la voz del cliente indica: \"{desc_sample}\""
         
     return resumen
 
-# --- FUNCIÓN GENERADORA DE TEXTO SLACK ---
+# --- TEXTO SLACK ---
 def generar_texto_slack(df_metrics, week):
     lines = []
     lines.append(f"📣 C_OPS Weekly Update - Support - Semana {week} 📣\n")
@@ -318,10 +320,8 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
 
     return pdf.output(dest='S').encode('latin-1')
 
-
 # --- PDF 2: PRESENTACIÓN HORIZONTAL (Look Cabify) ---
 def generar_pdf_presentacion(df_metrics, df_raw, week):
-    # Orientación Landscape (Horizontal), formato A4
     pdf = FPDF(orientation='L', unit='mm', format='A4')
     
     def clean_txt(text):
@@ -329,7 +329,6 @@ def generar_pdf_presentacion(df_metrics, df_raw, week):
         return str(text).replace('"', "'").replace('\n', ' ').encode('latin-1', 'replace').decode('latin-1')
     
     def add_header(title):
-        # Bloque superior Morado
         pdf.set_fill_color(115, 82, 255)
         pdf.rect(0, 0, 297, 22, 'F')
         pdf.set_font("Arial", 'B', 16)
@@ -337,22 +336,20 @@ def generar_pdf_presentacion(df_metrics, df_raw, week):
         pdf.set_xy(15, 6)
         pdf.cell(0, 10, clean_txt(title), ln=True)
     
-    # --- Diapositiva 1: Portada ---
     pdf.add_page()
     pdf.set_fill_color(115, 82, 255)
-    pdf.rect(0, 0, 297, 210, 'F') # Fondo Morado completo
+    pdf.rect(0, 0, 297, 210, 'F')
     pdf.set_text_color(255, 255, 255)
     
     pdf.set_y(85)
     pdf.set_font("Arial", 'B', 40)
     pdf.cell(0, 15, clean_txt("C_OPS Support Dashboard"), align='C', ln=True)
     pdf.set_font("Arial", '', 22)
-    pdf.set_text_color(0, 209, 163) # Verde neón
+    pdf.set_text_color(0, 209, 163)
     pdf.cell(0, 15, clean_txt(f"Resumen Directivo - Semana {week}"), align='C', ln=True)
     
     audiences_in_week = df_metrics[df_metrics['Week'] == week]['Audience'].unique()
     
-    # --- Diapositivas de Audiencias ---
     for aud in ['Driver', 'Rider', 'B2B', 'Emergencias', 'Aeropuerto']:
         if aud not in audiences_in_week: continue
         
@@ -373,7 +370,6 @@ def generar_pdf_presentacion(df_metrics, df_raw, week):
             reop_diff = curr['Ratio Reopen/Tickets (%)'] - prev['Ratio Reopen/Tickets (%)']
             nps_count = curr.get('NPS_Count', 0)
             
-            # -- Lado Izquierdo: Tabla de KPIs --
             pdf.set_xy(15, 35)
             pdf.set_fill_color(245, 245, 245)
             pdf.set_font("Arial", 'B', 12)
@@ -412,7 +408,6 @@ def generar_pdf_presentacion(df_metrics, df_raw, week):
                 pdf.set_font("Arial", 'B', 10)
                 pdf.cell(25, 8, clean_txt(wow_str), 0, 1, 'R')
                 
-                # Línea separadora sutil
                 pdf.set_draw_color(230, 230, 230)
                 pdf.line(15, y_start + 8, 100, y_start + 8)
                 y_start += 12
@@ -422,7 +417,6 @@ def generar_pdf_presentacion(df_metrics, df_raw, week):
             pdf.set_text_color(150, 150, 150)
             pdf.cell(85, 6, clean_txt(f"*NPS basado en {int(nps_count)} encuestas validas."), 0, 1, 'L')
 
-            # -- Lado Derecho: Gráfico Panorámico --
             df_trend = df_metrics[df_metrics['Audience'] == aud].sort_values('Week')
             if len(df_trend) > 1:
                 img_path = f"slide_trend_{aud}.png"
@@ -444,17 +438,16 @@ def generar_pdf_presentacion(df_metrics, df_raw, week):
                     ax1.spines['top'].set_visible(False)
                     ax2.spines['top'].set_visible(False)
                     plt.tight_layout()
-                    plt.savefig(img_path, dpi=200) # Alta calidad
+                    plt.savefig(img_path, dpi=200)
                     plt.close(fig)
                     
-                    pdf.image(img_path, x=115, y=30, w=170) # Gráfico a la derecha
+                    pdf.image(img_path, x=115, y=30, w=170)
                     os.remove(img_path)
                 except Exception: pass
 
-            # -- Parte Inferior: Análisis Narrativo --
             insight_nps = analizar_detractores(df_raw, aud, week)
             pdf.set_xy(15, 150)
-            pdf.set_fill_color(250, 240, 255) # Fondo lila super claro para insights
+            pdf.set_fill_color(250, 240, 255)
             pdf.rect(15, 145, 267, 45, 'F')
             
             if "Excelente" in insight_nps:
@@ -508,7 +501,7 @@ if file_main is not None:
         mime="application/pdf"
     )
 
-    # NUEVA PRESENTACIÓN HORIZONTAL
+    # PRESENTACIÓN HORIZONTAL
     st.sidebar.caption("Formato diapositivas visuales.")
     _pdf_horizontal = generar_pdf_presentacion(df_metrics, df_raw, selected_week)
     _ = st.sidebar.download_button(
