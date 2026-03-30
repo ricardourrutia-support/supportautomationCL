@@ -178,7 +178,23 @@ def analizar_detractores(df_raw, aud, week):
     if 'Description' in detractores.columns:
         sample_df = detractores[(detractores['Tag_3'] == t3) & (detractores['Description'].notna())]
         if not sample_df.empty:
-            desc_sample = str(sample_df['Description'].iloc[0]).replace('\n', ' ')[:150] + "..."
+            # Filtro inteligente: Evitar "Conversation with"
+            valid_samples = sample_df[~sample_df['Description'].str.contains('Conversation with', case=False, na=False)]
+            
+            if not valid_samples.empty:
+                best_desc = str(valid_samples['Description'].iloc[0])
+            else:
+                # Si todos son conversation with, nos quedamos con el primero
+                best_desc = str(sample_df['Description'].iloc[0])
+                
+            # Limpiamos saltos de línea para evitar que rompa el texto en el PDF
+            best_desc = best_desc.replace('\n', ' ').replace('\r', '').strip()
+            
+            # Ampliamos el límite de 150 a 600 caracteres para tener el registro completo
+            if len(best_desc) > 600:
+                desc_sample = best_desc[:600] + "..."
+            else:
+                desc_sample = best_desc
             
     resumen = f"Tuvimos {total} casos evaluados con NPS -100. "
     resumen += f"A nivel macro (Tag 1), la friccion principal esta en '{t1}'. "
@@ -311,7 +327,9 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
                 pdf.cell(0, 5, clean_txt("  [!] ALERTA NPS:"), ln=True)
                 pdf.set_font("Arial", '', 9)
                 pdf.set_text_color(80, 80, 80)
-                pdf.multi_cell(0, 5, clean_txt("  " + insight_nps))
+                # Corrección margen del texto en Vertical
+                pdf.set_x(15)
+                pdf.multi_cell(185, 5, clean_txt(insight_nps))
 
             pdf.ln(5)
             pdf.set_draw_color(220, 220, 220)
@@ -319,6 +337,7 @@ def generar_pdf_resumen(df_metrics, df_raw, week):
             pdf.ln(3)
 
     return pdf.output(dest='S').encode('latin-1')
+
 
 # --- PDF 2: PRESENTACIÓN HORIZONTAL (Look Cabify) ---
 def generar_pdf_presentacion(df_metrics, df_raw, week):
@@ -446,24 +465,28 @@ def generar_pdf_presentacion(df_metrics, df_raw, week):
                 except Exception: pass
 
             insight_nps = analizar_detractores(df_raw, aud, week)
-            pdf.set_xy(15, 150)
+            
+            # Caja para el insight de NPS - Altura ajustada
+            pdf.set_xy(15, 146)
             pdf.set_fill_color(250, 240, 255)
-            pdf.rect(15, 145, 267, 45, 'F')
+            pdf.rect(15, 144, 267, 56, 'F')
             
             if "Excelente" in insight_nps:
                 pdf.set_font("Arial", 'B', 11)
                 pdf.set_text_color(0, 209, 163)
                 pdf.cell(0, 8, clean_txt("  [Voz del Cliente] Excelente rendimiento"), ln=True)
+                pdf.set_x(17) # Indentado dentro del cuadro
                 pdf.set_font("Arial", 'I', 11)
                 pdf.set_text_color(80, 80, 80)
-                pdf.multi_cell(260, 6, clean_txt("  " + insight_nps))
+                pdf.multi_cell(263, 5.5, clean_txt(insight_nps))
             else:
                 pdf.set_font("Arial", 'B', 11)
                 pdf.set_text_color(255, 82, 82)
                 pdf.cell(0, 8, clean_txt("  [!] Focos de Friccion (Voz del Cliente)"), ln=True)
-                pdf.set_font("Arial", '', 11)
+                pdf.set_x(17) # Alineación estricta al margen interno de la caja lila
+                pdf.set_font("Arial", '', 10) # Bajar un poco la fuente para que entren quejas largas
                 pdf.set_text_color(50, 50, 50)
-                pdf.multi_cell(260, 6, clean_txt("  " + insight_nps))
+                pdf.multi_cell(263, 5.5, clean_txt(insight_nps))
 
     return pdf.output(dest='S').encode('latin-1')
 
