@@ -110,13 +110,13 @@ def load_main_data(filepath):
         
         mask_aero = (gn == 'cl aeropuerto local')
         
-        df['Final_Audience'] = np.nan
-        df.loc[mask_rd, 'Final_Audience'] = df.loc[mask_rd, 'Audience']
+        df['Final_Audience'] = pd.Series(dtype='object', index=df.index)
+        df.loc[mask_rd, 'Final_Audience'] = df.loc[mask_rd, 'Audience'].values
         df.loc[mask_b2b, 'Final_Audience'] = 'B2B'
         df.loc[mask_em, 'Final_Audience'] = 'Emergencias'
         df.loc[mask_aero, 'Final_Audience'] = 'Aeropuerto'
         
-        df = df.dropna(subset=['Final_Audience'])
+        df = df[df['Final_Audience'].notna()]
         df['Audience'] = df['Final_Audience']
         
     if 'Date_Time' in df.columns:
