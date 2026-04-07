@@ -173,24 +173,38 @@ def load_whatsapp_data(filepath):
 
 # --- CLASIFICADOR DE MENCIONES BRANDWATCH ---
 def clasificar_mencion(texto):
-    """Clasifica una mención de redes sociales en categorías de riesgo"""
-    if not isinstance(texto, str): return "Desconocido"
+    """Clasifica una mención de redes sociales en categorías de riesgo.
+    Solo clasifica como riesgo si hay contexto claro de queja hacia Cabify."""
+    if not isinstance(texto, str): return "Otros / Neutro"
     t = texto.lower()
     
-    # Ruido mediático (no es queja directa)
-    if any(p in t for p in ["ley uber", "bencina", "gobierno", "ministro", "noticia", "rt @", "retweet"]): 
+    # Ruido mediático (no es queja directa a Cabify)
+    if any(p in t for p in ["ley uber", "bencina", "gobierno", "ministro", "noticia", "rt @", "retweet", "jajaj", "jeje", "😂", "🤣"]): 
         return "Ruido Mediático"
     
-    # Categorías de riesgo
-    if any(p in t for p in ["cobro", "tarifa", "cobraron", "estafa", "robo", "promoción", "código", "descuento", "precio", "caro"]):
+    # Excluir menciones positivas o neutras
+    if any(p in t for p in ["gracias cabify", "buen servicio", "excelente", "recomiendo", "buena", "genial", "crack", "bacan"]): 
+        return "Otros / Neutro"
+    
+    # Solo clasificar si hay queja clara + contexto de problema
+    # Cobros y Tarifas - debe mencionar problema con precio/cobro explícitamente
+    if any(p in t for p in ["me cobraron", "cobro indebido", "estafa", "me robaron", "precio absurdo", "carísimo", "muy caro", "doble cobro"]):
         return "Cobros y Tarifas"
-    if any(p in t for p in ["aire", "calor", "conductor", "rasca", "pésimo", "grosero", "sucio", "olor", "música", "manejo"]):
+    
+    # Calidad de Servicio - queja explícita sobre conductor o vehículo
+    if any(p in t for p in ["conductor grosero", "mal conductor", "pésimo servicio", "auto sucio", "mal olor", "conductor pésimo", "manejo horrible"]):
         return "Calidad de Servicio"
-    if any(p in t for p in ["espera", "toman", "cancel", "demora", "no llega", "app", "acepta", "disponib", "hora", "asigna"]):
+    
+    # Disponibilidad / App - problema claro con la app o disponibilidad
+    if any(p in t for p in ["no hay autos", "nadie acepta", "canceló el viaje", "app no funciona", "demora eterna", "nunca llegó", "esperando horas"]):
         return "Disponibilidad / App"
-    if any(p in t for p in ["penca", "callampa", "ctm", "wea", "qlo", "mierda", "asco", "basura", "nunca más", "horrible"]):
+    
+    # Frustración Crítica - insultos dirigidos a Cabify con contexto de queja
+    if any(p in t for p in ["cabify mierda", "odio cabify", "nunca más cabify", "pésimo cabify", "cabify basura", "cabify horrible"]):
         return "Frustración Crítica"
-    if any(p in t for p in ["segur", "miedo", "acoso", "peligr", "ruta", "desvío", "asalt", "rob"]):
+    
+    # Seguridad - situaciones de peligro o acoso
+    if any(p in t for p in ["me asustó", "me acosó", "sentí peligro", "ruta extraña", "me desvió", "inseguro", "miedo"]):
         return "Seguridad"
     
     return "Otros / Neutro"
@@ -465,8 +479,30 @@ def analizar_detractores(df_raw, aud, period_value, period_type='monthly'):
         
     return resumen
 
+# --- FUNCIÓN AUXILIAR: TOP MOTIVOS ---
+def obtener_top_motivos(df_raw, audience, period_value, period_type='monthly', n=3, solo_detractores=True):
+    """Obtiene los top N motivos (Tag_3) para una audiencia en un período"""
+    if period_type == 'weekly':
+        if 'Week' not in df_raw.columns:
+            df_raw['Week'] = df_raw['Date_Time'].dt.isocalendar().week
+        df_filtered = df_raw[(df_raw['Audience'] == audience) & (df_raw['Week'] == period_value)]
+    else:
+        if 'YearMonth' not in df_raw.columns:
+            df_raw['YearMonth'] = df_raw['Date_Time'].dt.to_period('M')
+        df_filtered = df_raw[(df_raw['Audience'] == audience) & (df_raw['YearMonth'] == period_value)]
+    
+    # Para audiencias con NPS, filtrar solo detractores
+    if solo_detractores and audience != 'Aeropuerto WhatsApp':
+        df_filtered = df_filtered[df_filtered['NPS_Score'] == -100]
+    
+    if df_filtered.empty or 'Tag_3' not in df_filtered.columns:
+        return []
+    
+    top = df_filtered['Tag_3'].dropna().value_counts().head(n)
+    return [(motivo, int(vol)) for motivo, vol in top.items()]
+
 # --- TEXTO SLACK ---
-def generar_texto_slack(df_metrics, period_value, period_type='monthly', period_label=''):
+def generar_texto_slack(df_metrics, df_raw, period_value, period_type='monthly', df_brandwatch=None):
     if period_type == 'weekly':
         title = f"📣 C_OPS Weekly Update - Support - Semana {period_value} 📣\n"
         period_suffix = "WoW"
@@ -479,7 +515,11 @@ def generar_texto_slack(df_metrics, period_value, period_type='monthly', period_
     lines.append(title)
     lines.append("📄 Resumen Ejecutivo (PDF): [Pega el link a tu Drive aquí]")
     lines.append("📊 Datos Crudos por Audiencias (Excel): [Pega el link a tu Drive aquí]\n")
-    lines.append("--- RESUMEN DE INDICADORES ---\n")
+    
+    # === SECCIÓN 1: MÉTRICAS POR AUDIENCIA ===
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("📊 MÉTRICAS POR AUDIENCIA")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
     if period_type == 'weekly':
         audiences_in_period = df_metrics[df_metrics['Period'] == period_value]['Audience'].unique()
@@ -519,14 +559,62 @@ def generar_texto_slack(df_metrics, period_value, period_type='monthly', period_
         lines.append(f"{icon} {aud.upper()}")
         lines.append(f"• Volumen: {vol_curr:,.0f} ({vol_change:+.1f}% {period_suffix})")
         
-        nps_str = f"{nps_curr:.1f} ({nps_change:+.1f}) | {int(nps_count)} encuestas" if pd.notna(nps_curr) else "S/D"
+        nps_str = f"{nps_curr:.1f} ({nps_change:+.1f}) | {int(nps_count)} enc." if pd.notna(nps_curr) else "S/D"
         csat_str = f"{csat_curr:.1f}% ({csat_change:+.1f}%)" if pd.notna(csat_curr) else "S/D"
         lines.append(f"• Calidad: NPS {nps_str} | CSAT {csat_str}")
         
         firt_str = f"{firt_curr:.1f}%" if pd.notna(firt_curr) else "S/D"
         reop_str = f"{reop_curr:.1f}%" if pd.notna(reop_curr) else "S/D"
         lines.append(f"• Eficiencia: SLA 1ra Rsp: {firt_str} | Reopen: {reop_str}\n")
-
+    
+    # === SECCIÓN 2: MOTIVOS DE CONTACTO ===
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("🔍 MOTIVOS PRINCIPALES")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━\n")
+    
+    for aud in ['Rider', 'Driver', 'B2B', 'Emergencias', 'Aeropuerto', 'Aeropuerto WhatsApp']:
+        if aud not in audiences_in_period: continue
+        
+        icon = iconos.get(aud, '📊')
+        
+        if aud == 'Aeropuerto WhatsApp':
+            # Para WhatsApp: motivos más recurrentes (sin NPS)
+            motivos = obtener_top_motivos(df_raw, aud, period_value, period_type, n=3, solo_detractores=False)
+            if motivos:
+                lines.append(f"{icon} {aud} - Motivos más recurrentes:")
+                for motivo, vol in motivos:
+                    lines.append(f"   • {motivo}: {vol} casos")
+                lines.append("")
+        else:
+            # Para otras audiencias: motivos en detractores NPS -100
+            motivos = obtener_top_motivos(df_raw, aud, period_value, period_type, n=3, solo_detractores=True)
+            if motivos:
+                lines.append(f"{icon} {aud} - Top fricciones NPS -100:")
+                for motivo, vol in motivos:
+                    lines.append(f"   • {motivo}: {vol} casos")
+                lines.append("")
+    
+    # === SECCIÓN 3: RIESGO REPUTACIONAL ===
+    if df_brandwatch is not None:
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("⚠️ RIESGO REPUTACIONAL")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━\n")
+        
+        df_risk = df_brandwatch[~df_brandwatch['Categoría'].isin(['Ruido Mediático', 'Otros / Neutro', 'Desconocido'])]
+        
+        total_menciones = len(df_brandwatch)
+        menciones_riesgo = len(df_risk)
+        pct_riesgo = (menciones_riesgo / total_menciones * 100) if total_menciones > 0 else 0
+        
+        lines.append(f"📊 Total menciones analizadas: {total_menciones:,}")
+        lines.append(f"⚠️ Menciones de riesgo: {menciones_riesgo:,} ({pct_riesgo:.1f}%)\n")
+        
+        if menciones_riesgo > 0:
+            lines.append("Top categorías de riesgo:")
+            cat_counts = df_risk['Categoría'].value_counts().head(5)
+            for cat, vol in cat_counts.items():
+                lines.append(f"   • {cat}: {vol} menciones")
+    
     return "\n".join(lines)
 
 # --- GENERAR GRÁFICO DE EVOLUCIÓN PARA PDF ---
@@ -561,7 +649,7 @@ def crear_grafico_evolucion(df_trend, metric_name, color, title, y_range=None, a
     return fig
 
 # --- PDF 1: REPORTE VERTICAL CLÁSICO ---
-def generar_pdf_resumen(df_metrics, df_raw, period_value, period_type='monthly'):
+def generar_pdf_resumen(df_metrics, df_raw, period_value, period_type='monthly', df_brandwatch=None):
     pdf = FPDF()
     pdf.add_page()
     
@@ -723,11 +811,102 @@ def generar_pdf_resumen(df_metrics, df_raw, period_value, period_type='monthly')
             
             pdf.ln(5)
 
+    # === PÁGINA DE MOTIVOS PRINCIPALES ===
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 14)
+    pdf.set_text_color(115, 82, 255)
+    pdf.cell(0, 10, clean_txt(f"Motivos Principales de Contacto - {period_title}"), ln=True, align='C')
+    pdf.ln(5)
+    
+    def clean_txt_local(text):
+        if pd.isna(text): return ""
+        return str(text).replace('"', "'").replace('\n', ' ').encode('latin-1', 'replace').decode('latin-1')
+    
+    iconos_txt = {'Rider': '[Rider]', 'Driver': '[Driver]', 'B2B': '[B2B]', 'Emergencias': '[Emerg]', 'Aeropuerto': '[Aero]', 'Aeropuerto WhatsApp': '[AeroWA]'}
+    
+    for aud in ['Driver', 'Rider', 'B2B', 'Emergencias', 'Aeropuerto', 'Aeropuerto WhatsApp']:
+        if aud not in audiences_in_period: continue
+        
+        pdf.set_font("Arial", 'B', 11)
+        pdf.set_text_color(115, 82, 255)
+        pdf.cell(0, 7, clean_txt_local(f"{iconos_txt.get(aud, '')} {aud}"), ln=True)
+        
+        if aud == 'Aeropuerto WhatsApp':
+            # Motivos recurrentes (sin NPS)
+            motivos = obtener_top_motivos(df_raw, aud, period_value, period_type, n=5, solo_detractores=False)
+            pdf.set_font("Arial", 'I', 9)
+            pdf.set_text_color(80, 80, 80)
+            pdf.cell(0, 5, "Top motivos de contacto (sin encuestas NPS):", ln=True)
+        else:
+            # Motivos en detractores NPS -100
+            motivos = obtener_top_motivos(df_raw, aud, period_value, period_type, n=5, solo_detractores=True)
+            pdf.set_font("Arial", 'I', 9)
+            pdf.set_text_color(80, 80, 80)
+            pdf.cell(0, 5, "Top fricciones en detractores NPS -100:", ln=True)
+        
+        if motivos:
+            pdf.set_font("Arial", '', 9)
+            pdf.set_text_color(0, 0, 0)
+            for motivo, vol in motivos:
+                motivo_clean = clean_txt_local(str(motivo)[:50])
+                pdf.cell(0, 5, f"  - {motivo_clean}: {vol} casos", ln=True)
+        else:
+            pdf.set_font("Arial", 'I', 9)
+            pdf.set_text_color(0, 209, 163)
+            pdf.cell(0, 5, "  Sin casos registrados en este periodo.", ln=True)
+        
+        pdf.ln(3)
+    
+    # === SECCIÓN DE RIESGO REPUTACIONAL ===
+    if df_brandwatch is not None:
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 14)
+        pdf.set_text_color(115, 82, 255)
+        pdf.cell(0, 10, clean_txt_local("Riesgo Reputacional - Menciones en RRSS"), ln=True, align='C')
+        pdf.ln(5)
+        
+        df_risk = df_brandwatch[~df_brandwatch['Categoría'].isin(['Ruido Mediático', 'Otros / Neutro', 'Desconocido'])]
+        
+        total_menciones = len(df_brandwatch)
+        menciones_riesgo = len(df_risk)
+        pct_riesgo = (menciones_riesgo / total_menciones * 100) if total_menciones > 0 else 0
+        
+        pdf.set_font("Arial", 'B', 11)
+        pdf.set_text_color(0, 0, 0)
+        pdf.cell(0, 7, "Resumen General:", ln=True)
+        
+        pdf.set_font("Arial", '', 10)
+        pdf.cell(0, 6, f"  - Total menciones analizadas: {total_menciones:,}", ln=True)
+        pdf.cell(0, 6, f"  - Menciones de riesgo: {menciones_riesgo:,} ({pct_riesgo:.1f}%)", ln=True)
+        pdf.ln(5)
+        
+        if menciones_riesgo > 0:
+            pdf.set_font("Arial", 'B', 11)
+            pdf.cell(0, 7, "Top 5 Categorias de Riesgo:", ln=True)
+            
+            cat_counts = df_risk['Categoría'].value_counts().head(5)
+            pdf.set_font("Arial", '', 10)
+            for cat, vol in cat_counts.items():
+                pdf.cell(0, 6, f"  - {clean_txt_local(cat)}: {vol} menciones", ln=True)
+            
+            pdf.ln(5)
+            
+            # Sentimiento si existe
+            if 'Sentimiento' in df_brandwatch.columns:
+                pdf.set_font("Arial", 'B', 11)
+                pdf.cell(0, 7, "Distribucion por Sentimiento:", ln=True)
+                
+                sent_counts = df_brandwatch['Sentimiento'].value_counts()
+                pdf.set_font("Arial", '', 10)
+                for sent, vol in sent_counts.items():
+                    pct = vol / total_menciones * 100
+                    pdf.cell(0, 6, f"  - {clean_txt_local(sent.capitalize())}: {vol} ({pct:.1f}%)", ln=True)
+
     return pdf.output(dest='S').encode('latin-1')
 
 
 # --- PDF 2: PRESENTACIÓN HORIZONTAL ---
-def generar_pdf_presentacion(df_metrics, df_raw, period_value, period_type='monthly'):
+def generar_pdf_presentacion(df_metrics, df_raw, period_value, period_type='monthly', df_brandwatch=None):
     pdf = FPDF(orientation='L', unit='mm', format='A4')
     
     if period_type == 'weekly':
@@ -892,6 +1071,74 @@ def generar_pdf_presentacion(df_metrics, df_raw, period_value, period_type='mont
                 pdf.set_font("Arial", '', 10)
                 pdf.set_text_color(50, 50, 50)
                 pdf.multi_cell(263, 5.5, clean_txt(insight_nps))
+    
+    # === PÁGINA DE RIESGO REPUTACIONAL ===
+    if df_brandwatch is not None:
+        pdf.add_page()
+        add_header("Riesgo Reputacional - Menciones en RRSS")
+        
+        df_risk = df_brandwatch[~df_brandwatch['Categoría'].isin(['Ruido Mediático', 'Otros / Neutro', 'Desconocido'])]
+        
+        total_menciones = len(df_brandwatch)
+        menciones_riesgo = len(df_risk)
+        pct_riesgo = (menciones_riesgo / total_menciones * 100) if total_menciones > 0 else 0
+        
+        # Resumen en tarjetas
+        pdf.set_xy(15, 35)
+        pdf.set_fill_color(245, 245, 245)
+        
+        # Tarjeta 1: Total
+        pdf.set_font("Arial", 'B', 24)
+        pdf.set_text_color(115, 82, 255)
+        pdf.cell(65, 20, f"{total_menciones:,}", 0, 0, 'C', 1)
+        
+        # Tarjeta 2: Riesgo
+        pdf.set_font("Arial", 'B', 24)
+        pdf.set_text_color(255, 82, 82)
+        pdf.cell(65, 20, f"{menciones_riesgo:,}", 0, 0, 'C', 1)
+        
+        # Tarjeta 3: Porcentaje
+        pdf.set_font("Arial", 'B', 24)
+        pdf.set_text_color(255, 179, 71)
+        pdf.cell(65, 20, f"{pct_riesgo:.1f}%", 0, 0, 'C', 1)
+        
+        pdf.ln(22)
+        pdf.set_x(15)
+        pdf.set_font("Arial", '', 10)
+        pdf.set_text_color(100, 100, 100)
+        pdf.cell(65, 6, "Total Menciones", 0, 0, 'C')
+        pdf.cell(65, 6, "Menciones de Riesgo", 0, 0, 'C')
+        pdf.cell(65, 6, "% de Riesgo", 0, 0, 'C')
+        
+        # Top categorías
+        if menciones_riesgo > 0:
+            pdf.set_xy(15, 75)
+            pdf.set_font("Arial", 'B', 12)
+            pdf.set_text_color(0, 0, 0)
+            pdf.cell(0, 8, "Top 5 Categorias de Riesgo:", ln=True)
+            
+            cat_counts = df_risk['Categoría'].value_counts().head(5)
+            y_pos = 85
+            
+            color_map = {
+                'Frustración Crítica': (255, 82, 82),
+                'Seguridad': (255, 138, 128),
+                'Cobros y Tarifas': (255, 179, 71),
+                'Calidad de Servicio': (255, 213, 79),
+                'Disponibilidad / App': (129, 212, 250)
+            }
+            
+            for cat, vol in cat_counts.items():
+                color = color_map.get(cat, (150, 150, 150))
+                pdf.set_fill_color(*color)
+                bar_width = min(vol / cat_counts.max() * 150, 150)
+                pdf.rect(15, y_pos, bar_width, 10, 'F')
+                
+                pdf.set_xy(bar_width + 20, y_pos + 2)
+                pdf.set_font("Arial", '', 10)
+                pdf.set_text_color(0, 0, 0)
+                pdf.cell(0, 6, f"{clean_txt(cat)}: {vol}")
+                y_pos += 14
 
     return pdf.output(dest='S').encode('latin-1')
 
@@ -1006,7 +1253,7 @@ if file_main is not None:
     st.sidebar.divider()
     st.sidebar.subheader("📄 Reportes Ejecutivos (PDF)")
     st.sidebar.caption("Formato documento clásico.")
-    _pdf_vertical = generar_pdf_resumen(df_metrics, df_raw.copy(), selected_period, period_type)
+    _pdf_vertical = generar_pdf_resumen(df_metrics, df_raw.copy(), selected_period, period_type, df_brandwatch)
     _ = st.sidebar.download_button(
         label=f"📄 Descargar Informe (Vertical)",
         data=_pdf_vertical,
@@ -1016,7 +1263,7 @@ if file_main is not None:
 
     # PRESENTACIÓN HORIZONTAL
     st.sidebar.caption("Formato diapositivas visuales.")
-    _pdf_horizontal = generar_pdf_presentacion(df_metrics, df_raw.copy(), selected_period, period_type)
+    _pdf_horizontal = generar_pdf_presentacion(df_metrics, df_raw.copy(), selected_period, period_type, df_brandwatch)
     _ = st.sidebar.download_button(
         label=f"📊 Descargar Presentacion (Horizontal)",
         data=_pdf_horizontal,
@@ -1056,7 +1303,7 @@ if file_main is not None:
     with tabs[0]:
         st.markdown("### 💬 Copiar Resumen para Slack")
         st.info("Pasa el mouse sobre la caja de abajo y haz clic en el ícono de copiar para pegarlo directamente en Slack.")
-        slack_msg = generar_texto_slack(df_metrics, selected_period, period_type)
+        slack_msg = generar_texto_slack(df_metrics, df_raw, selected_period, period_type, df_brandwatch)
         st.code(slack_msg, language="markdown")
         st.divider()
 
@@ -1352,34 +1599,15 @@ if file_main is not None:
             
             st.divider()
             
-            # Ejemplos de menciones críticas
-            st.markdown("#### 💬 Ejemplos de Menciones Críticas")
-            
-            for cat in ['Frustración Crítica', 'Seguridad', 'Cobros y Tarifas']:
-                df_cat = df_risk[df_risk['Categoría'] == cat]
-                if not df_cat.empty and 'Texto' in df_cat.columns:
-                    with st.expander(f"**{cat}** ({len(df_cat)} menciones)", expanded=(cat == 'Frustración Crítica')):
-                        samples = df_cat['Texto'].dropna().head(5).tolist()
-                        for i, sample in enumerate(samples, 1):
-                            texto_limpio = str(sample)[:300] + "..." if len(str(sample)) > 300 else str(sample)
-                            st.caption(f"{i}. {texto_limpio}")
-            
-            st.divider()
-            
             # Exportar
-            st.markdown("#### 📥 Exportar Datos de Riesgo")
-            col1, col2 = st.columns(2)
-            with col1:
-                excel_bw = generar_excel_brandwatch(df_risk)
-                st.download_button(
-                    label="📊 Excel Casos Críticos (Solo Riesgo)",
-                    data=excel_bw,
-                    file_name="Riesgo_Reputacional_Support.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            with col2:
-                # Vista previa
-                st.caption(f"Total casos de riesgo: {len(df_risk):,}")
+            st.markdown("#### 📥 Exportar Datos")
+            excel_bw = generar_excel_brandwatch(df_risk)
+            st.download_button(
+                label="📊 Excel Menciones de Riesgo",
+                data=excel_bw,
+                file_name="Riesgo_Reputacional_Support.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
     # === INFORMACIÓN DE FILTROS APLICADOS ===
     st.sidebar.divider()
