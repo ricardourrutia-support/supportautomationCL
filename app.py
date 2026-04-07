@@ -598,18 +598,25 @@ def generar_texto_slack(df_metrics, df_raw, period_value, period_type='monthly',
         lines.append("⚠️ RIESGO REPUTACIONAL")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━━━\n")
         
-        df_risk = df_brandwatch[~df_brandwatch['Categoría'].isin(['Ruido Mediático', 'Otros / Neutro', 'Desconocido'])]
-        
         total_menciones = len(df_brandwatch)
-        menciones_riesgo = len(df_risk)
-        pct_riesgo = (menciones_riesgo / total_menciones * 100) if total_menciones > 0 else 0
+        
+        # Filtrar por Sentiment = 'negative'
+        if 'Sentimiento' in df_brandwatch.columns:
+            df_negativas = df_brandwatch[df_brandwatch['Sentimiento'].astype(str).str.lower() == 'negative']
+        elif 'Sentiment' in df_brandwatch.columns:
+            df_negativas = df_brandwatch[df_brandwatch['Sentiment'].astype(str).str.lower() == 'negative']
+        else:
+            df_negativas = pd.DataFrame()
+        
+        menciones_negativas = len(df_negativas)
+        pct_negativas = (menciones_negativas / total_menciones * 100) if total_menciones > 0 else 0
         
         lines.append(f"📊 Total menciones analizadas: {total_menciones:,}")
-        lines.append(f"⚠️ Menciones de riesgo: {menciones_riesgo:,} ({pct_riesgo:.1f}%)\n")
+        lines.append(f"⚠️ Menciones negativas: {menciones_negativas:,} ({pct_negativas:.1f}%)\n")
         
-        if menciones_riesgo > 0:
-            lines.append("Top categorías de riesgo:")
-            cat_counts = df_risk['Categoría'].value_counts().head(5)
+        if menciones_negativas > 0 and 'Categoría' in df_negativas.columns:
+            lines.append("Top tipos de reclamos:")
+            cat_counts = df_negativas['Categoría'].value_counts().head(5)
             for cat, vol in cat_counts.items():
                 lines.append(f"   • {cat}: {vol} menciones")
     
@@ -905,11 +912,18 @@ def generar_pdf_resumen(df_metrics, df_raw, period_value, period_type='monthly',
         pdf.cell(0, 10, clean_txt_local("Riesgo Reputacional - Menciones en RRSS"), ln=True, align='C')
         pdf.ln(5)
         
-        df_risk = df_brandwatch[~df_brandwatch['Categoría'].isin(['Ruido Mediático', 'Otros / Neutro', 'Desconocido'])]
-        
         total_menciones = len(df_brandwatch)
-        menciones_riesgo = len(df_risk)
-        pct_riesgo = (menciones_riesgo / total_menciones * 100) if total_menciones > 0 else 0
+        
+        # Filtrar por Sentiment = 'negative' (campo de Brandwatch)
+        if 'Sentimiento' in df_brandwatch.columns:
+            df_negativas = df_brandwatch[df_brandwatch['Sentimiento'].astype(str).str.lower() == 'negative'].copy()
+        elif 'Sentiment' in df_brandwatch.columns:
+            df_negativas = df_brandwatch[df_brandwatch['Sentiment'].astype(str).str.lower() == 'negative'].copy()
+        else:
+            df_negativas = pd.DataFrame()
+        
+        menciones_negativas = len(df_negativas)
+        pct_negativas = (menciones_negativas / total_menciones * 100) if total_menciones > 0 else 0
         
         pdf.set_font("Arial", 'B', 11)
         pdf.set_text_color(0, 0, 0)
@@ -917,30 +931,36 @@ def generar_pdf_resumen(df_metrics, df_raw, period_value, period_type='monthly',
         
         pdf.set_font("Arial", '', 10)
         pdf.cell(0, 6, f"  - Total menciones analizadas: {total_menciones:,}", ln=True)
-        pdf.cell(0, 6, f"  - Menciones de riesgo: {menciones_riesgo:,} ({pct_riesgo:.1f}%)", ln=True)
+        pdf.cell(0, 6, f"  - Menciones negativas: {menciones_negativas:,} ({pct_negativas:.1f}%)", ln=True)
         pdf.ln(5)
         
-        if menciones_riesgo > 0:
+        if menciones_negativas > 0 and 'Categoría' in df_negativas.columns:
             pdf.set_font("Arial", 'B', 11)
-            pdf.cell(0, 7, "Top 5 Categorias de Riesgo:", ln=True)
+            pdf.cell(0, 7, "Top 5 Tipos de Reclamos (en menciones negativas):", ln=True)
             
-            cat_counts = df_risk['Categoría'].value_counts().head(5)
+            cat_counts = df_negativas['Categoría'].value_counts().head(5)
             pdf.set_font("Arial", '', 10)
             for cat, vol in cat_counts.items():
-                pdf.cell(0, 6, f"  - {clean_txt_local(cat)}: {vol} menciones", ln=True)
-            
-            pdf.ln(5)
-            
-            # Sentimiento si existe
-            if 'Sentimiento' in df_brandwatch.columns:
-                pdf.set_font("Arial", 'B', 11)
-                pdf.cell(0, 7, "Distribucion por Sentimiento:", ln=True)
-                
-                sent_counts = df_brandwatch['Sentimiento'].value_counts()
-                pdf.set_font("Arial", '', 10)
-                for sent, vol in sent_counts.items():
-                    pct = vol / total_menciones * 100
-                    pdf.cell(0, 6, f"  - {clean_txt_local(sent.capitalize())}: {vol} ({pct:.1f}%)", ln=True)
+                pct_cat = vol / menciones_negativas * 100
+                pdf.cell(0, 6, f"  - {clean_txt_local(cat)}: {vol} menciones ({pct_cat:.1f}%)", ln=True)
+        
+        pdf.ln(5)
+        
+        # Distribución general de sentimiento
+        pdf.set_font("Arial", 'B', 11)
+        pdf.cell(0, 7, "Distribucion por Sentimiento:", ln=True)
+        
+        if 'Sentimiento' in df_brandwatch.columns:
+            sent_counts = df_brandwatch['Sentimiento'].value_counts()
+        elif 'Sentiment' in df_brandwatch.columns:
+            sent_counts = df_brandwatch['Sentiment'].value_counts()
+        else:
+            sent_counts = pd.Series()
+        
+        pdf.set_font("Arial", '', 10)
+        for sent, vol in sent_counts.items():
+            pct = vol / total_menciones * 100
+            pdf.cell(0, 6, f"  - {clean_txt_local(str(sent).capitalize())}: {vol} ({pct:.1f}%)", ln=True)
 
     return pdf.output(dest='S').encode('latin-1')
 
@@ -1117,11 +1137,18 @@ def generar_pdf_presentacion(df_metrics, df_raw, period_value, period_type='mont
         pdf.add_page()
         add_header("Riesgo Reputacional - Menciones en RRSS")
         
-        df_risk = df_brandwatch[~df_brandwatch['Categoría'].isin(['Ruido Mediático', 'Otros / Neutro', 'Desconocido'])]
-        
         total_menciones = len(df_brandwatch)
-        menciones_riesgo = len(df_risk)
-        pct_riesgo = (menciones_riesgo / total_menciones * 100) if total_menciones > 0 else 0
+        
+        # Filtrar por Sentiment = 'negative'
+        if 'Sentimiento' in df_brandwatch.columns:
+            df_negativas = df_brandwatch[df_brandwatch['Sentimiento'].astype(str).str.lower() == 'negative']
+        elif 'Sentiment' in df_brandwatch.columns:
+            df_negativas = df_brandwatch[df_brandwatch['Sentiment'].astype(str).str.lower() == 'negative']
+        else:
+            df_negativas = pd.DataFrame()
+        
+        menciones_negativas = len(df_negativas)
+        pct_negativas = (menciones_negativas / total_menciones * 100) if total_menciones > 0 else 0
         
         # Resumen en tarjetas
         pdf.set_xy(15, 35)
@@ -1132,32 +1159,32 @@ def generar_pdf_presentacion(df_metrics, df_raw, period_value, period_type='mont
         pdf.set_text_color(115, 82, 255)
         pdf.cell(65, 20, f"{total_menciones:,}", 0, 0, 'C', 1)
         
-        # Tarjeta 2: Riesgo
+        # Tarjeta 2: Negativas
         pdf.set_font("Arial", 'B', 24)
         pdf.set_text_color(255, 82, 82)
-        pdf.cell(65, 20, f"{menciones_riesgo:,}", 0, 0, 'C', 1)
+        pdf.cell(65, 20, f"{menciones_negativas:,}", 0, 0, 'C', 1)
         
         # Tarjeta 3: Porcentaje
         pdf.set_font("Arial", 'B', 24)
         pdf.set_text_color(255, 179, 71)
-        pdf.cell(65, 20, f"{pct_riesgo:.1f}%", 0, 0, 'C', 1)
+        pdf.cell(65, 20, f"{pct_negativas:.1f}%", 0, 0, 'C', 1)
         
         pdf.ln(22)
         pdf.set_x(15)
         pdf.set_font("Arial", '', 10)
         pdf.set_text_color(100, 100, 100)
         pdf.cell(65, 6, "Total Menciones", 0, 0, 'C')
-        pdf.cell(65, 6, "Menciones de Riesgo", 0, 0, 'C')
-        pdf.cell(65, 6, "% de Riesgo", 0, 0, 'C')
+        pdf.cell(65, 6, "Menciones Negativas", 0, 0, 'C')
+        pdf.cell(65, 6, "% Negativas", 0, 0, 'C')
         
-        # Top categorías
-        if menciones_riesgo > 0:
+        # Top categorías en menciones negativas
+        if menciones_negativas > 0 and 'Categoría' in df_negativas.columns:
             pdf.set_xy(15, 75)
             pdf.set_font("Arial", 'B', 12)
             pdf.set_text_color(0, 0, 0)
-            pdf.cell(0, 8, "Top 5 Categorias de Riesgo:", ln=True)
+            pdf.cell(0, 8, "Top 5 Tipos de Reclamos (menciones negativas):", ln=True)
             
-            cat_counts = df_risk['Categoría'].value_counts().head(5)
+            cat_counts = df_negativas['Categoría'].value_counts().head(5)
             y_pos = 85
             
             color_map = {
@@ -1165,7 +1192,8 @@ def generar_pdf_presentacion(df_metrics, df_raw, period_value, period_type='mont
                 'Seguridad': (255, 138, 128),
                 'Cobros y Tarifas': (255, 179, 71),
                 'Calidad de Servicio': (255, 213, 79),
-                'Disponibilidad / App': (129, 212, 250)
+                'Disponibilidad / App': (129, 212, 250),
+                'Otros / Neutro': (180, 180, 180)
             }
             
             for cat, vol in cat_counts.items():
@@ -1573,60 +1601,76 @@ if file_main is not None:
     if df_brandwatch is not None and len(tabs) > 3:
         with tabs[3]:
             st.markdown("### ⚠️ Riesgo Reputacional (Brandwatch)")
-            st.info("📊 Análisis del período actual - Solo menciones clasificadas como riesgo.")
+            st.info("📊 Análisis de menciones negativas clasificadas por tipo de reclamo.")
             
-            # Filtrar solo menciones de riesgo (excluir ruido y neutros)
-            df_risk = df_brandwatch[~df_brandwatch['Categoría'].isin(['Ruido Mediático', 'Otros / Neutro', 'Desconocido'])].copy()
+            total_menciones = len(df_brandwatch)
+            
+            # Filtrar por Sentiment = 'negative'
+            if 'Sentimiento' in df_brandwatch.columns:
+                df_negativas = df_brandwatch[df_brandwatch['Sentimiento'].astype(str).str.lower() == 'negative'].copy()
+            elif 'Sentiment' in df_brandwatch.columns:
+                df_negativas = df_brandwatch[df_brandwatch['Sentiment'].astype(str).str.lower() == 'negative'].copy()
+            else:
+                df_negativas = pd.DataFrame()
+            
+            menciones_negativas = len(df_negativas)
+            pct_negativas = (menciones_negativas / total_menciones * 100) if total_menciones > 0 else 0
             
             # Métricas principales
             st.markdown("#### 📊 Resumen de Menciones")
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Total Menciones", f"{len(df_brandwatch):,}")
+                st.metric("Total Menciones", f"{total_menciones:,}")
             with col2:
-                pct_riesgo = len(df_risk)/len(df_brandwatch)*100 if len(df_brandwatch) > 0 else 0
-                st.metric("Menciones de Riesgo", f"{len(df_risk):,}", delta=f"{pct_riesgo:.1f}%", delta_color="inverse")
+                st.metric("Menciones Negativas", f"{menciones_negativas:,}", delta=f"{pct_negativas:.1f}%", delta_color="inverse")
             with col3:
-                n_frustracion = len(df_risk[df_risk['Categoría'] == 'Frustración Crítica'])
-                st.metric("🔴 Frustración Crítica", f"{n_frustracion:,}", delta_color="inverse")
-            with col4:
-                n_seguridad = len(df_risk[df_risk['Categoría'] == 'Seguridad'])
-                st.metric("🟠 Seguridad", f"{n_seguridad:,}", delta_color="inverse")
+                if 'Categoría' in df_negativas.columns:
+                    top_cat = df_negativas['Categoría'].value_counts().index[0] if len(df_negativas) > 0 else "N/A"
+                    st.metric("Principal Reclamo", top_cat)
             
             st.divider()
             
-            # Top 5 categorías de reclamos
-            st.markdown("#### 📈 Top 5 Categorías de Reclamos")
-            cat_counts = df_risk['Categoría'].value_counts().reset_index()
-            cat_counts.columns = ['Categoría', 'Menciones']
-            cat_counts = cat_counts.head(5)  # Solo top 5
-            
-            color_map = {
-                'Frustración Crítica': '#FF5252',
-                'Seguridad': '#FF8A80',
-                'Cobros y Tarifas': '#FFB347',
-                'Calidad de Servicio': '#FFD54F',
-                'Disponibilidad / App': '#81D4FA'
-            }
-            
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                fig_cat = px.bar(cat_counts, x='Menciones', y='Categoría', orientation='h',
-                                color='Categoría', color_discrete_map=color_map, text='Menciones')
-                fig_cat.update_traces(textposition='outside')
-                fig_cat.update_layout(yaxis={'categoryorder':'total ascending'}, plot_bgcolor="white", showlegend=False, height=300)
-                st.plotly_chart(fig_cat, use_container_width=True)
-            with col2:
-                st.dataframe(cat_counts, use_container_width=True, hide_index=True)
-            
-            # Sentimiento si existe
-            if 'Sentimiento' in df_brandwatch.columns:
-                st.divider()
-                st.markdown("#### 😊 Distribución por Sentimiento")
-                col1, col2 = st.columns(2)
+            # Top 5 tipos de reclamos en menciones negativas
+            if menciones_negativas > 0 and 'Categoría' in df_negativas.columns:
+                st.markdown("#### 📈 Top 5 Tipos de Reclamos (menciones negativas)")
+                cat_counts = df_negativas['Categoría'].value_counts().reset_index()
+                cat_counts.columns = ['Categoría', 'Menciones']
+                cat_counts = cat_counts.head(5)
                 
+                color_map = {
+                    'Frustración Crítica': '#FF5252',
+                    'Seguridad': '#FF8A80',
+                    'Cobros y Tarifas': '#FFB347',
+                    'Calidad de Servicio': '#FFD54F',
+                    'Disponibilidad / App': '#81D4FA',
+                    'Otros / Neutro': '#BDBDBD'
+                }
+                
+                col1, col2 = st.columns([2, 1])
                 with col1:
-                    sent_counts = df_brandwatch['Sentimiento'].value_counts().reset_index()
+                    fig_cat = px.bar(cat_counts, x='Menciones', y='Categoría', orientation='h',
+                                    color='Categoría', color_discrete_map=color_map, text='Menciones')
+                    fig_cat.update_traces(textposition='outside')
+                    fig_cat.update_layout(yaxis={'categoryorder':'total ascending'}, plot_bgcolor="white", showlegend=False, height=300)
+                    st.plotly_chart(fig_cat, use_container_width=True)
+                with col2:
+                    st.dataframe(cat_counts, use_container_width=True, hide_index=True)
+            
+            # Distribución por Sentimiento
+            st.divider()
+            st.markdown("#### 😊 Distribución por Sentimiento")
+            
+            if 'Sentimiento' in df_brandwatch.columns:
+                sent_col = 'Sentimiento'
+            elif 'Sentiment' in df_brandwatch.columns:
+                sent_col = 'Sentiment'
+            else:
+                sent_col = None
+            
+            if sent_col:
+                col1, col2 = st.columns(2)
+                with col1:
+                    sent_counts = df_brandwatch[sent_col].value_counts().reset_index()
                     sent_counts.columns = ['Sentimiento', 'Volumen']
                     fig_sent = px.pie(sent_counts, values='Volumen', names='Sentimiento',
                                      color='Sentimiento',
@@ -1641,9 +1685,9 @@ if file_main is not None:
             
             # Exportar
             st.markdown("#### 📥 Exportar Datos")
-            excel_bw = generar_excel_brandwatch(df_risk)
+            excel_bw = generar_excel_brandwatch(df_negativas)
             st.download_button(
-                label="📊 Excel Menciones de Riesgo",
+                label="📊 Excel Menciones Negativas",
                 data=excel_bw,
                 file_name="Riesgo_Reputacional_Support.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
