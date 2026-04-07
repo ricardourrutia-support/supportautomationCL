@@ -300,8 +300,15 @@ def generar_excel_cabify(df_raw, audiences, period_type, selected_period, period
             
             # Ajustar anchos de columna
             for i, col in enumerate(df_aud.columns):
-                max_len = max(df_aud[col].astype(str).map(len).max(), len(str(col))) + 2
-                worksheet.set_column(i, i, min(max_len, 40))
+                try:
+                    col_data = df_aud[col].astype(str)
+                    max_data_len = col_data.str.len().max()
+                    if pd.isna(max_data_len):
+                        max_data_len = 10
+                    max_len = max(int(max_data_len), len(str(col))) + 2
+                    worksheet.set_column(i, i, min(max_len, 40))
+                except:
+                    worksheet.set_column(i, i, 15)
             
             # Aplicar formato a filas alternadas
             for row_num in range(len(df_aud)):
@@ -347,8 +354,15 @@ def generar_excel_brandwatch(df_risk):
         
         # Ajustar anchos
         for i, col in enumerate(df_export.columns):
-            max_len = max(df_export[col].astype(str).map(len).max(), len(str(col))) + 2
-            worksheet.set_column(i, i, min(max_len, 60))
+            try:
+                col_data = df_export[col].astype(str)
+                max_data_len = col_data.str.len().max()
+                if pd.isna(max_data_len):
+                    max_data_len = 10
+                max_len = max(int(max_data_len), len(str(col))) + 2
+                worksheet.set_column(i, i, min(max_len, 60))
+            except:
+                worksheet.set_column(i, i, 20)
         
         worksheet.freeze_panes(1, 0)
     
