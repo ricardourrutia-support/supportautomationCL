@@ -369,11 +369,28 @@ SLA_CONFIG = {
     'Aeropuerto WhatsApp': {'firt': 1, 'furt': 1},
 }
 
+def get_prev_week_period(year_week_int):
+    """Calcula el período de la semana anterior considerando el cambio de año ISO."""
+    year_week_int = int(year_week_int)
+    year = year_week_int // 100
+    week = year_week_int % 100
+    if week <= 1:
+        prev_year = year - 1
+        # Dic 28 siempre cae en la última semana ISO del año
+        last_day = datetime(prev_year, 12, 28)
+        last_week = int(last_day.isocalendar()[1])
+        return prev_year * 100 + last_week
+    return year * 100 + (week - 1)
+
 def aggregate_data(df, period_type='monthly'):
     if period_type == 'weekly':
-        df['Period'] = df['Date_Time'].dt.isocalendar().week
-        df['Year'] = df['Date_Time'].dt.isocalendar().year
-        df['PeriodLabel'] = 'S' + df['Period'].astype(str)
+        iso = df['Date_Time'].dt.isocalendar()
+        df['Year'] = iso['year'].astype(int)
+        df['_Week'] = iso['week'].astype(int)
+        # Clave única y ordenable: YYYYSS (ej: 202452, 202501)
+        df['Period'] = df['Year'] * 100 + df['_Week']
+        df['PeriodLabel'] = 'S' + df['_Week'].astype(str) + "'" + df['Year'].astype(str).str[-2:]
+        df.drop(columns=['_Week'], inplace=True)
     else:
         df['Year'] = df['Date_Time'].dt.year
         df['Month'] = df['Date_Time'].dt.month
@@ -435,9 +452,11 @@ def aggregate_data(df, period_type='monthly'):
 # --- FUNCIÓN DE ANÁLISIS DE DETRACTORES ---
 def analizar_detractores(df_raw, aud, period_value, period_type='monthly'):
     if period_type == 'weekly':
-        if 'Week' not in df_raw.columns:
-            df_raw['Week'] = df_raw['Date_Time'].dt.isocalendar().week
-        detractores = df_raw[(df_raw['Audience'] == aud) & (df_raw['Week'] == period_value) & (df_raw['NPS_Score'] == -100)]
+        if 'Week' not in df_raw.columns or df_raw['Week'].max() < 200:
+            # Reconstruir clave combinada si aún no existe o es solo número de semana
+            _iso = df_raw['Date_Time'].dt.isocalendar()
+            df_raw['Week'] = _iso['year'].astype(int) * 100 + _iso['week'].astype(int)
+        detractores = df_raw[(df_raw['Audience'] == aud) & (df_raw['Week'] == int(period_value)) & (df_raw['NPS_Score'] == -100)]
     else:
         if 'YearMonth' not in df_raw.columns:
             df_raw['YearMonth'] = df_raw['Date_Time'].dt.to_period('M')
@@ -481,9 +500,10 @@ def analizar_detractores(df_raw, aud, period_value, period_type='monthly'):
 def obtener_top_motivos(df_raw, audience, period_value, period_type='monthly', n=3, solo_detractores=True):
     """Obtiene los top N motivos (Tag_3) para una audiencia en un período"""
     if period_type == 'weekly':
-        if 'Week' not in df_raw.columns:
-            df_raw['Week'] = df_raw['Date_Time'].dt.isocalendar().week
-        df_filtered = df_raw[(df_raw['Audience'] == audience) & (df_raw['Week'] == period_value)]
+        if 'Week' not in df_raw.columns or df_raw['Week'].max() < 200:
+            _iso = df_raw['Date_Time'].dt.isocalendar()
+            df_raw['Week'] = _iso['year'].astype(int) * 100 + _iso['week'].astype(int)
+        df_filtered = df_raw[(df_raw['Audience'] == audience) & (df_raw['Week'] == int(period_value))]
     else:
         if 'YearMonth' not in df_raw.columns:
             df_raw['YearMonth'] = df_raw['Date_Time'].dt.to_period('M')
@@ -502,7 +522,7 @@ def obtener_top_motivos(df_raw, audience, period_value, period_type='monthly', n
 # --- TEXTO SLACK ---
 def generar_texto_slack(df_metrics, df_raw, period_value, period_type='monthly', df_brandwatch=None):
     if period_type == 'weekly':
-        title = f"📣 C_OPS Weekly Update - Support - Semana {period_value} 📣\n"
+        title = f"📣 C_OPS Weekly Update - Support - Semana {int(period_value) % 100} ({int(period_value) // 100}) 📣\n"
         period_suffix = "WoW"
     else:
         month_name = calendar.month_name[period_value.month]
@@ -521,7 +541,7 @@ def generar_texto_slack(df_metrics, df_raw, period_value, period_type='monthly',
 
     if period_type == 'weekly':
         audiences_in_period = df_metrics[df_metrics['Period'] == period_value]['Audience'].unique()
-        prev_period = period_value - 1
+        prev_period = get_prev_week_period(period_value)
     else:
         audiences_in_period = df_metrics[df_metrics['Period'] == period_value]['Audience'].unique()
         prev_period = period_value - 1
@@ -659,11 +679,12 @@ def generar_pdf_resumen(df_metrics, df_raw, period_value, period_type='monthly',
     pdf.add_page()
     
     if period_type == 'weekly':
-        period_title = f"Semana {period_value}"
-        prev_period = period_value - 1
+        period_title = f"Semana {int(period_value) % 100} ({int(period_value) // 100})"
+        prev_period = get_prev_week_period(period_value)
         period_suffix = "WoW"
         # Para filtrar df_raw
-        df_raw['Week'] = df_raw['Date_Time'].dt.isocalendar().week
+        df_raw['Week'] = (df_raw['Date_Time'].dt.isocalendar()['year'].astype(int) * 100 +
+                          df_raw['Date_Time'].dt.isocalendar()['week'].astype(int))
         period_col = 'Week'
     else:
         month_name = calendar.month_name[period_value.month]
@@ -970,9 +991,10 @@ def generar_pdf_presentacion(df_metrics, df_raw, period_value, period_type='mont
     pdf = FPDF(orientation='L', unit='mm', format='A4')
     
     if period_type == 'weekly':
-        period_title = f"Semana {period_value}"
-        prev_period = period_value - 1
-        df_raw['Week'] = df_raw['Date_Time'].dt.isocalendar().week
+        period_title = f"Semana {int(period_value) % 100} ({int(period_value) // 100})"
+        prev_period = get_prev_week_period(period_value)
+        df_raw['Week'] = (df_raw['Date_Time'].dt.isocalendar()['year'].astype(int) * 100 +
+                          df_raw['Date_Time'].dt.isocalendar()['week'].astype(int))
     else:
         month_name = calendar.month_name[period_value.month]
         period_title = f"{month_name} {period_value.year}"
@@ -1273,8 +1295,12 @@ if file_main is not None:
         
         # Agregar columnas de período a df_raw
         if period_type == 'weekly':
-            df_raw['Week'] = df_raw['Date_Time'].dt.isocalendar().week
-            df_raw['Year'] = df_raw['Date_Time'].dt.isocalendar().year
+            _iso = df_raw['Date_Time'].dt.isocalendar()
+            df_raw['_iso_year'] = _iso['year'].astype(int)
+            df_raw['_iso_week'] = _iso['week'].astype(int)
+            df_raw['Week'] = df_raw['_iso_year'] * 100 + df_raw['_iso_week']
+            df_raw['Year'] = df_raw['_iso_year']
+            df_raw.drop(columns=['_iso_year', '_iso_week'], inplace=True)
         else:
             df_raw['YearMonth'] = df_raw['Date_Time'].dt.to_period('M')
     
@@ -1299,7 +1325,10 @@ if file_main is not None:
     
     # Formatear períodos para display
     if period_type == 'weekly':
-        period_options = {str(p): f"Semana {p}" for p in available_periods}
+        period_options = {
+            str(p): f"Semana {int(p) % 100} ({int(p) // 100})"
+            for p in available_periods
+        }
     else:
         period_options = {str(p): f"{calendar.month_name[p.month]} {p.year}" for p in available_periods}
     
@@ -1376,7 +1405,10 @@ if file_main is not None:
         st.divider()
 
         current_data = df_filtered[df_filtered['Period'] == selected_period]
-        prev_period = selected_period - 1
+        if period_type == 'weekly':
+            prev_period = get_prev_week_period(selected_period)
+        else:
+            prev_period = selected_period - 1
         prev_data = df_filtered[df_filtered['Period'] == prev_period]
         
         if not current_data.empty:
