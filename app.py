@@ -173,39 +173,47 @@ def load_whatsapp_data(filepath):
 
 # --- CLASIFICADOR DE MENCIONES BRANDWATCH ---
 def clasificar_mencion(texto):
-    """Clasifica una mención de redes sociales en categorías de riesgo."""
-    if not isinstance(texto, str): return "Otros / Neutro"
+    """Clasifica una mención de redes sociales en categorías específicas de reclamo."""
+    if not isinstance(texto, str): return "Sin categorizar"
     t = texto.lower()
     
-    # Excluir menciones claramente positivas o neutras
-    if any(p in t for p in ["gracias cabify", "buen servicio", "excelente", "recomiendo", "genial", "bacan", "buena onda", "felicidades"]): 
-        return "Otros / Neutro"
+    # 1. SEGURIDAD / ASALTOS - Incidentes de seguridad
+    if any(p in t for p in ["asalto", "asaltaron", "robo", "robaron", "flaite", "violento", "atropella", "escaparon", "confabulados", "miedo", "acoso", "peligro", "inseguro", "desvió ruta"]):
+        return "Seguridad / Asaltos"
     
-    # Ruido mediático (noticias, política, no es queja)
-    if any(p in t for p in ["ley uber", "gobierno", "ministro", "noticia", "congreso", "senado", "proyecto de ley"]): 
-        return "Ruido Mediático"
+    # 2. BENCINA / COMBUSTIBLE - Tema del alza
+    if any(p in t for p in ["bencina", "combustible", "alza", "gasolina", "parafina"]):
+        return "Alza Bencina"
     
-    # Cobros y Tarifas - quejas sobre precios o cobros
-    if any(p in t for p in ["cobro", "cobraron", "estafa", "robo", "carísimo", "caro", "precio", "tarifa", "doble cobro", "cobro indebido", "me robaron"]):
-        return "Cobros y Tarifas"
+    # 3. TARIFAS / PRECIOS ALTOS
+    if any(p in t for p in ["caro", "carísimo", "precio", "tarifa", "cobro", "cobraron", "alta demanda", "dinámico", "costó", "vale", "pagar"]):
+        return "Tarifas / Precios"
     
-    # Calidad de Servicio - quejas sobre conductores o vehículos
-    if any(p in t for p in ["conductor", "chofer", "pésimo", "grosero", "sucio", "olor", "manejo", "mal servicio", "pésimo servicio"]):
-        return "Calidad de Servicio"
+    # 4. EXPERIENCIA CON CONDUCTOR
+    if any(p in t for p in ["conductor", "chofer", "grosero", "maleducado", "sucio", "olor", "aire acondicionado", "manejo", "manejaba", "llegó tarde"]):
+        return "Experiencia Conductor"
     
-    # Disponibilidad / App - problemas con la app o disponibilidad
-    if any(p in t for p in ["no hay", "nadie acepta", "canceló", "cancelaron", "demora", "nunca llegó", "esperando", "no llega", "app no funciona", "no funciona"]):
-        return "Disponibilidad / App"
+    # 5. APP / DISPONIBILIDAD
+    if any(p in t for p in ["app", "aplicación", "no hay auto", "nadie acepta", "canceló", "cancelaron", "demora", "esperando", "no funciona", "no carga"]):
+        return "App / Disponibilidad"
     
-    # Seguridad - situaciones de riesgo
-    if any(p in t for p in ["miedo", "acoso", "peligro", "ruta extraña", "desvió", "inseguro", "asaltaron"]):
-        return "Seguridad"
+    # 6. POLÍTICA / NOTICIAS - Menciones políticas no son reclamos reales
+    if any(p in t for p in ["boric", "kast", "gobierno", "ministro", "diputado", "senador", "congreso", "política", "rojas vade", "vade"]):
+        return "Política / Noticias"
     
-    # Frustración general - insultos o quejas fuertes DIRIGIDAS a Cabify
-    if any(p in t for p in ["mierda", "horrible", "basura", "nunca más", "peor servicio", "penca", "malo", "odio"]):
-        return "Frustración Crítica"
+    # 7. SERVICIO AL CLIENTE
+    if any(p in t for p in ["no responden", "no contestan", "reclamo", "queja", "soporte", "ayuda", "solución", "reembolso"]):
+        return "Servicio al Cliente"
     
-    return "Otros / Neutro"
+    # 8. COMPETENCIA (mencionan otras apps)
+    if any(p in t for p in ["uber mejor", "didi mejor", "prefiero uber", "prefiero didi", "uber sí", "didi sí"]):
+        return "Comparación Competencia"
+    
+    # 9. QUEJAS GENERALES (insultos sin contexto específico)
+    if any(p in t for p in ["pésimo", "horrible", "basura", "mierda", "nunca más", "malo", "peor", "odio", "penca"]):
+        return "Queja General"
+    
+    return "Sin categorizar"
 
 # --- CARGA DE BRANDWATCH ---
 @st.cache_data
@@ -369,28 +377,11 @@ SLA_CONFIG = {
     'Aeropuerto WhatsApp': {'firt': 1, 'furt': 1},
 }
 
-def get_prev_week_period(year_week_int):
-    """Calcula el período de la semana anterior considerando el cambio de año ISO."""
-    year_week_int = int(year_week_int)
-    year = year_week_int // 100
-    week = year_week_int % 100
-    if week <= 1:
-        prev_year = year - 1
-        # Dic 28 siempre cae en la última semana ISO del año
-        last_day = datetime(prev_year, 12, 28)
-        last_week = int(last_day.isocalendar()[1])
-        return prev_year * 100 + last_week
-    return year * 100 + (week - 1)
-
 def aggregate_data(df, period_type='monthly'):
     if period_type == 'weekly':
-        iso = df['Date_Time'].dt.isocalendar()
-        df['Year'] = iso['year'].astype(int)
-        df['_Week'] = iso['week'].astype(int)
-        # Clave única y ordenable: YYYYSS (ej: 202452, 202501)
-        df['Period'] = df['Year'] * 100 + df['_Week']
-        df['PeriodLabel'] = 'S' + df['_Week'].astype(str) + "'" + df['Year'].astype(str).str[-2:]
-        df.drop(columns=['_Week'], inplace=True)
+        df['Period'] = df['Date_Time'].dt.isocalendar().week
+        df['Year'] = df['Date_Time'].dt.isocalendar().year
+        df['PeriodLabel'] = 'S' + df['Period'].astype(str)
     else:
         df['Year'] = df['Date_Time'].dt.year
         df['Month'] = df['Date_Time'].dt.month
@@ -452,11 +443,9 @@ def aggregate_data(df, period_type='monthly'):
 # --- FUNCIÓN DE ANÁLISIS DE DETRACTORES ---
 def analizar_detractores(df_raw, aud, period_value, period_type='monthly'):
     if period_type == 'weekly':
-        if 'Week' not in df_raw.columns or df_raw['Week'].max() < 200:
-            # Reconstruir clave combinada si aún no existe o es solo número de semana
-            _iso = df_raw['Date_Time'].dt.isocalendar()
-            df_raw['Week'] = _iso['year'].astype(int) * 100 + _iso['week'].astype(int)
-        detractores = df_raw[(df_raw['Audience'] == aud) & (df_raw['Week'] == int(period_value)) & (df_raw['NPS_Score'] == -100)]
+        if 'Week' not in df_raw.columns:
+            df_raw['Week'] = df_raw['Date_Time'].dt.isocalendar().week
+        detractores = df_raw[(df_raw['Audience'] == aud) & (df_raw['Week'] == period_value) & (df_raw['NPS_Score'] == -100)]
     else:
         if 'YearMonth' not in df_raw.columns:
             df_raw['YearMonth'] = df_raw['Date_Time'].dt.to_period('M')
@@ -500,10 +489,9 @@ def analizar_detractores(df_raw, aud, period_value, period_type='monthly'):
 def obtener_top_motivos(df_raw, audience, period_value, period_type='monthly', n=3, solo_detractores=True):
     """Obtiene los top N motivos (Tag_3) para una audiencia en un período"""
     if period_type == 'weekly':
-        if 'Week' not in df_raw.columns or df_raw['Week'].max() < 200:
-            _iso = df_raw['Date_Time'].dt.isocalendar()
-            df_raw['Week'] = _iso['year'].astype(int) * 100 + _iso['week'].astype(int)
-        df_filtered = df_raw[(df_raw['Audience'] == audience) & (df_raw['Week'] == int(period_value))]
+        if 'Week' not in df_raw.columns:
+            df_raw['Week'] = df_raw['Date_Time'].dt.isocalendar().week
+        df_filtered = df_raw[(df_raw['Audience'] == audience) & (df_raw['Week'] == period_value)]
     else:
         if 'YearMonth' not in df_raw.columns:
             df_raw['YearMonth'] = df_raw['Date_Time'].dt.to_period('M')
@@ -522,7 +510,7 @@ def obtener_top_motivos(df_raw, audience, period_value, period_type='monthly', n
 # --- TEXTO SLACK ---
 def generar_texto_slack(df_metrics, df_raw, period_value, period_type='monthly', df_brandwatch=None):
     if period_type == 'weekly':
-        title = f"📣 C_OPS Weekly Update - Support - Semana {int(period_value) % 100} ({int(period_value) // 100}) 📣\n"
+        title = f"📣 C_OPS Weekly Update - Support - Semana {period_value} 📣\n"
         period_suffix = "WoW"
     else:
         month_name = calendar.month_name[period_value.month]
@@ -541,7 +529,7 @@ def generar_texto_slack(df_metrics, df_raw, period_value, period_type='monthly',
 
     if period_type == 'weekly':
         audiences_in_period = df_metrics[df_metrics['Period'] == period_value]['Audience'].unique()
-        prev_period = get_prev_week_period(period_value)
+        prev_period = period_value - 1
     else:
         audiences_in_period = df_metrics[df_metrics['Period'] == period_value]['Audience'].unique()
         prev_period = period_value - 1
@@ -674,17 +662,16 @@ def crear_grafico_evolucion(df_trend, metric_name, color, title, y_range=None, a
     return fig
 
 # --- PDF 1: REPORTE VERTICAL CLÁSICO ---
-def generar_pdf_resumen(df_metrics, df_raw, period_value, period_type='monthly', df_brandwatch=None):
+def generar_pdf_resumen(df_metrics, df_raw, period_value, period_type='monthly', df_brandwatch=None, weeks_window=12):
     pdf = FPDF()
     pdf.add_page()
     
     if period_type == 'weekly':
-        period_title = f"Semana {int(period_value) % 100} ({int(period_value) // 100})"
-        prev_period = get_prev_week_period(period_value)
+        period_title = f"Semana {period_value}"
+        prev_period = period_value - 1
         period_suffix = "WoW"
         # Para filtrar df_raw
-        df_raw['Week'] = (df_raw['Date_Time'].dt.isocalendar()['year'].astype(int) * 100 +
-                          df_raw['Date_Time'].dt.isocalendar()['week'].astype(int))
+        df_raw['Week'] = df_raw['Date_Time'].dt.isocalendar().week
         period_col = 'Week'
     else:
         month_name = calendar.month_name[period_value.month]
@@ -785,11 +772,12 @@ def generar_pdf_resumen(df_metrics, df_raw, period_value, period_type='monthly',
         
         df_trend = df_metrics[df_metrics['Audience'] == aud].sort_values('Period')
         
-        # Filtrar solo períodos completos (excluir el período actual si es incompleto)
-        if period_type == 'monthly':
-            today = datetime.now()
-            current_period = pd.Period(f"{today.year}-{today.month:02d}", freq='M')
-            df_trend = df_trend[df_trend['Period'] <= period_value]
+        # Filtrar solo períodos completos hasta el seleccionado
+        df_trend = df_trend[df_trend['Period'] <= period_value]
+        
+        # Para semanal, limitar a la ventana de semanas
+        if period_type == 'weekly' and len(df_trend) > weeks_window:
+            df_trend = df_trend.tail(weeks_window)
         
         if len(df_trend) > 1:
             pdf.set_font("Arial", 'B', 11)
@@ -987,14 +975,13 @@ def generar_pdf_resumen(df_metrics, df_raw, period_value, period_type='monthly',
 
 
 # --- PDF 2: PRESENTACIÓN HORIZONTAL ---
-def generar_pdf_presentacion(df_metrics, df_raw, period_value, period_type='monthly', df_brandwatch=None):
+def generar_pdf_presentacion(df_metrics, df_raw, period_value, period_type='monthly', df_brandwatch=None, weeks_window=12):
     pdf = FPDF(orientation='L', unit='mm', format='A4')
     
     if period_type == 'weekly':
-        period_title = f"Semana {int(period_value) % 100} ({int(period_value) // 100})"
-        prev_period = get_prev_week_period(period_value)
-        df_raw['Week'] = (df_raw['Date_Time'].dt.isocalendar()['year'].astype(int) * 100 +
-                          df_raw['Date_Time'].dt.isocalendar()['week'].astype(int))
+        period_title = f"Semana {period_value}"
+        prev_period = period_value - 1
+        df_raw['Week'] = df_raw['Date_Time'].dt.isocalendar().week
     else:
         month_name = calendar.month_name[period_value.month]
         period_title = f"{month_name} {period_value.year}"
@@ -1100,6 +1087,10 @@ def generar_pdf_presentacion(df_metrics, df_raw, period_value, period_type='mont
             
             # Filtrar solo hasta el período seleccionado
             df_trend = df_trend[df_trend['Period'] <= period_value]
+            
+            # Para semanal, limitar a la ventana de semanas
+            if period_type == 'weekly' and len(df_trend) > weeks_window:
+                df_trend = df_trend.tail(weeks_window)
             
             if len(df_trend) > 1:
                 img_path = f"slide_trend_{aud}.png"
@@ -1210,12 +1201,16 @@ def generar_pdf_presentacion(df_metrics, df_raw, period_value, period_type='mont
             y_pos = 85
             
             color_map = {
-                'Frustración Crítica': (255, 82, 82),
-                'Seguridad': (255, 138, 128),
-                'Cobros y Tarifas': (255, 179, 71),
-                'Calidad de Servicio': (255, 213, 79),
-                'Disponibilidad / App': (129, 212, 250),
-                'Otros / Neutro': (180, 180, 180)
+                'Seguridad / Asaltos': (255, 82, 82),
+                'Alza Bencina': (255, 152, 0),
+                'Tarifas / Precios': (255, 193, 7),
+                'Experiencia Conductor': (255, 235, 59),
+                'App / Disponibilidad': (129, 212, 250),
+                'Política / Noticias': (158, 158, 158),
+                'Servicio al Cliente': (171, 71, 188),
+                'Comparación Competencia': (121, 134, 203),
+                'Queja General': (239, 83, 80),
+                'Sin categorizar': (189, 189, 189)
             }
             
             for cat, vol in cat_counts.items():
@@ -1295,12 +1290,8 @@ if file_main is not None:
         
         # Agregar columnas de período a df_raw
         if period_type == 'weekly':
-            _iso = df_raw['Date_Time'].dt.isocalendar()
-            df_raw['_iso_year'] = _iso['year'].astype(int)
-            df_raw['_iso_week'] = _iso['week'].astype(int)
-            df_raw['Week'] = df_raw['_iso_year'] * 100 + df_raw['_iso_week']
-            df_raw['Year'] = df_raw['_iso_year']
-            df_raw.drop(columns=['_iso_year', '_iso_week'], inplace=True)
+            df_raw['Week'] = df_raw['Date_Time'].dt.isocalendar().week
+            df_raw['Year'] = df_raw['Date_Time'].dt.isocalendar().year
         else:
             df_raw['YearMonth'] = df_raw['Date_Time'].dt.to_period('M')
     
@@ -1313,11 +1304,15 @@ if file_main is not None:
     df_filtered = df_metrics[df_metrics['Audience'] == selected_audience].sort_values('Period')
     available_periods = sorted(df_filtered['Period'].dropna().unique(), reverse=True)
     
-    # Para no mezclar períodos incompletos, excluir el actual si es mensual
+    # Para no mezclar períodos incompletos, excluir el actual
+    today = datetime.now()
     if period_type == 'monthly':
-        today = datetime.now()
         current_period = pd.Period(f"{today.year}-{today.month:02d}", freq='M')
         available_periods = [p for p in available_periods if p < current_period]
+    else:
+        # Para semanal, excluir la semana actual (incompleta)
+        current_week = today.isocalendar()[1]
+        available_periods = [p for p in available_periods if p < current_week]
     
     if len(available_periods) == 0:
         st.warning("No hay períodos completos disponibles para analizar.")
@@ -1325,10 +1320,7 @@ if file_main is not None:
     
     # Formatear períodos para display
     if period_type == 'weekly':
-        period_options = {
-            str(p): f"Semana {int(p) % 100} ({int(p) // 100})"
-            for p in available_periods
-        }
+        period_options = {str(p): f"Semana {p}" for p in available_periods}
     else:
         period_options = {str(p): f"{calendar.month_name[p.month]} {p.year}" for p in available_periods}
     
@@ -1338,6 +1330,16 @@ if file_main is not None:
         format_func=lambda x: period_options[x],
         index=0
     )
+    
+    # Selector de ventana de semanas (solo para análisis semanal)
+    weeks_window = 12  # Default
+    if period_type == 'weekly':
+        weeks_window = st.sidebar.select_slider(
+            "📅 Semanas a mostrar en evolución",
+            options=[4, 8, 12],
+            value=12,
+            help="Cantidad de semanas a mostrar en los gráficos de evolución histórica"
+        )
     
     if period_type == 'weekly':
         selected_period = int(selected_period_str)
@@ -1350,7 +1352,7 @@ if file_main is not None:
     st.sidebar.divider()
     st.sidebar.subheader("📄 Reportes Ejecutivos (PDF)")
     st.sidebar.caption("Formato documento clásico.")
-    _pdf_vertical = generar_pdf_resumen(df_metrics, df_raw.copy(), selected_period, period_type, df_brandwatch)
+    _pdf_vertical = generar_pdf_resumen(df_metrics, df_raw.copy(), selected_period, period_type, df_brandwatch, weeks_window)
     _ = st.sidebar.download_button(
         label=f"📄 Descargar Informe (Vertical)",
         data=_pdf_vertical,
@@ -1360,7 +1362,7 @@ if file_main is not None:
 
     # PRESENTACIÓN HORIZONTAL
     st.sidebar.caption("Formato diapositivas visuales.")
-    _pdf_horizontal = generar_pdf_presentacion(df_metrics, df_raw.copy(), selected_period, period_type, df_brandwatch)
+    _pdf_horizontal = generar_pdf_presentacion(df_metrics, df_raw.copy(), selected_period, period_type, df_brandwatch, weeks_window)
     _ = st.sidebar.download_button(
         label=f"📊 Descargar Presentacion (Horizontal)",
         data=_pdf_horizontal,
@@ -1405,10 +1407,7 @@ if file_main is not None:
         st.divider()
 
         current_data = df_filtered[df_filtered['Period'] == selected_period]
-        if period_type == 'weekly':
-            prev_period = get_prev_week_period(selected_period)
-        else:
-            prev_period = selected_period - 1
+        prev_period = selected_period - 1
         prev_data = df_filtered[df_filtered['Period'] == prev_period]
         
         if not current_data.empty:
@@ -1469,10 +1468,20 @@ if file_main is not None:
     # === TAB 2: EVOLUCIÓN HISTÓRICA ===
     with tabs[1]:
         st.markdown(f"### 📊 Evolución de Indicadores - {selected_audience}")
-        st.info(f"Visualiza la tendencia histórica de todos los indicadores clave. Solo se muestran períodos completos hasta {period_display}.")
         
         # Filtrar solo hasta el período seleccionado (no incluir períodos futuros o incompletos)
         df_trend = df_filtered[df_filtered['Period'] <= selected_period].sort_values('Period').copy()
+        
+        # Para análisis semanal, limitar a la ventana seleccionada
+        if period_type == 'weekly' and len(df_trend) > weeks_window:
+            df_trend = df_trend.tail(weeks_window)
+        
+        # Info con contexto
+        n_periodos = len(df_trend)
+        if period_type == 'weekly':
+            st.info(f"📊 Mostrando las últimas **{n_periodos} semanas** hasta {period_display}. Puedes ajustar la ventana en el sidebar.")
+        else:
+            st.info(f"📊 Mostrando **{n_periodos} meses** de evolución hasta {period_display}.")
         
         if len(df_trend) > 0:
             # Gráfico 1: Volumen
@@ -1670,12 +1679,16 @@ if file_main is not None:
                 cat_counts = cat_counts.head(5)
                 
                 color_map = {
-                    'Frustración Crítica': '#FF5252',
-                    'Seguridad': '#FF8A80',
-                    'Cobros y Tarifas': '#FFB347',
-                    'Calidad de Servicio': '#FFD54F',
-                    'Disponibilidad / App': '#81D4FA',
-                    'Otros / Neutro': '#BDBDBD'
+                    'Seguridad / Asaltos': '#FF5252',
+                    'Alza Bencina': '#FF9800',
+                    'Tarifas / Precios': '#FFC107',
+                    'Experiencia Conductor': '#FFEB3B',
+                    'App / Disponibilidad': '#81D4FA',
+                    'Política / Noticias': '#9E9E9E',
+                    'Servicio al Cliente': '#AB47BC',
+                    'Comparación Competencia': '#7986CB',
+                    'Queja General': '#EF5350',
+                    'Sin categorizar': '#BDBDBD'
                 }
                 
                 col1, col2 = st.columns([2, 1])
