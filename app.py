@@ -1405,13 +1405,55 @@ if file_main is not None:
         current_period = pd.Period(f"{today.year}-{today.month:02d}", freq='M')
         available_periods = [p for p in available_periods if p < current_period]
         
-        # Detectar y advertir sobre meses con datos incompletos
+        # Detectar meses con datos incompletos
         meses_incompletos = detectar_meses_incompletos(df_raw, period_type)
-        if meses_incompletos:
-            meses_str = [str(m) for m in meses_incompletos if m in available_periods]
-            if meses_str:
-                with st.sidebar.expander("⚠️ Meses con datos incompletos", expanded=False):
-                    st.warning(f"Los siguientes meses tienen menos de 4 semanas de datos:\n• " + "\n• ".join(meses_str))
+        
+        # Selector de rango de meses a considerar
+        if len(available_periods) > 1:
+            st.sidebar.markdown("---")
+            st.sidebar.markdown("**📅 Rango de Análisis**")
+            
+            # Formatear para mostrar
+            period_labels = {str(p): f"{calendar.month_name[p.month]} {p.year}" for p in sorted(available_periods)}
+            sorted_periods = sorted(available_periods)
+            
+            # Mostrar info de meses incompletos
+            meses_incompletos_str = [f"{calendar.month_name[m.month]} {m.year}" for m in meses_incompletos if m in available_periods]
+            if meses_incompletos_str:
+                st.sidebar.caption(f"⚠️ Meses con pocos datos: {', '.join(meses_incompletos_str)}")
+            
+            # Selector de mes inicial
+            desde_options = [str(p) for p in sorted_periods]
+            desde_default = 0
+            # Sugerir empezar desde el primer mes completo
+            for i, p in enumerate(sorted_periods):
+                if p not in meses_incompletos:
+                    desde_default = i
+                    break
+            
+            desde_mes = st.sidebar.selectbox(
+                "Desde",
+                options=desde_options,
+                format_func=lambda x: period_labels[x],
+                index=desde_default,
+                help="Selecciona el mes inicial para el análisis evolutivo"
+            )
+            
+            # Filtrar períodos según selección
+            desde_period = pd.Period(desde_mes)
+            available_periods = [p for p in available_periods if p >= desde_period]
+            
+            # Actualizar df_filtered también
+            df_filtered = df_filtered[df_filtered['Period'] >= desde_period]
+            
+            # Actualizar df_metrics para que solo incluya períodos seleccionados
+            df_metrics = df_metrics[df_metrics['Period'] >= desde_period]
+            
+            # Actualizar df_raw para gráficos
+            if 'YearMonth' in df_raw.columns:
+                df_raw = df_raw[df_raw['YearMonth'] >= desde_period]
+            
+            st.sidebar.caption(f"📊 Analizando {len(available_periods)} meses")
     else:
         # Para semanal, excluir la semana actual (incompleta)
         current_week = today.isocalendar()[1]
@@ -1427,8 +1469,9 @@ if file_main is not None:
     else:
         period_options = {str(p): f"{calendar.month_name[p.month]} {p.year}" for p in available_periods}
     
+    st.sidebar.markdown("---")
     selected_period_str = st.sidebar.selectbox(
-        f"Selecciona {'Semana' if period_type == 'weekly' else 'Mes'} a visualizar", 
+        f"{'Semana' if period_type == 'weekly' else 'Mes'} a visualizar", 
         options=list(period_options.keys()),
         format_func=lambda x: period_options[x],
         index=0
