@@ -18,6 +18,80 @@ CABIFY_PURPLE = "#7352FF"
 CABIFY_SECONDARY = "#00D1A3"
 CABIFY_LIGHT_PURPLE = "#E2D9FF"
 
+# Columnas importantes para validación
+REQUIRED_COLUMNS = {
+    'Date_Time': 'Fecha del ticket',
+    'Audience': 'Audiencia',
+    'Contact Type': 'Tipo de contacto',
+    'Ticket Number': 'Número de ticket'
+}
+
+IMPORTANT_COLUMNS = {
+    'NPS Score': 'NPS (calidad)',
+    '% CSAT': 'CSAT (satisfacción)',
+    '# First Reply Time (Hours)': 'FiRT (tiempo respuesta)',
+    '# Full Resolution Time (Hours)': 'FuRT (tiempo resolución)',
+    '# Tickets con reopen': 'Reaperturas',
+    'ES Output Tags 1st Level v2': 'Tag Nivel 1',
+    'ES Output Tags 2nd Level v2': 'Tag Nivel 2',
+    'ES Output Tags 3rd Level v2': 'Tag Nivel 3'
+}
+
+def validar_datos(df, source_name="archivo"):
+    """Valida que el DataFrame tenga las columnas necesarias y datos suficientes."""
+    warnings = []
+    errors = []
+    
+    # Verificar columnas requeridas
+    for col, desc in REQUIRED_COLUMNS.items():
+        if col not in df.columns:
+            errors.append(f"❌ Falta columna requerida: **{col}** ({desc})")
+    
+    # Verificar columnas importantes
+    missing_important = []
+    for col, desc in IMPORTANT_COLUMNS.items():
+        if col not in df.columns:
+            missing_important.append(f"• {col} ({desc})")
+    
+    if missing_important:
+        warnings.append(f"⚠️ Columnas importantes no encontradas:\n" + "\n".join(missing_important))
+    
+    # Verificar datos vacíos en columnas importantes existentes
+    empty_cols = []
+    for col, desc in IMPORTANT_COLUMNS.items():
+        if col in df.columns:
+            pct_valid = df[col].notna().sum() / len(df) * 100
+            if pct_valid < 1:
+                empty_cols.append(f"• {desc}: 0% de datos")
+            elif pct_valid < 10:
+                empty_cols.append(f"• {desc}: {pct_valid:.1f}% de datos")
+    
+    if empty_cols:
+        warnings.append(f"⚠️ Columnas con pocos datos:\n" + "\n".join(empty_cols))
+    
+    return errors, warnings
+
+def detectar_meses_incompletos(df, period_type='monthly'):
+    """Detecta meses con datos incompletos basado en semanas presentes."""
+    if 'Date_Time' not in df.columns:
+        return []
+    
+    df_temp = df.copy()
+    df_temp['Date_Time'] = pd.to_datetime(df_temp['Date_Time'], errors='coerce')
+    df_temp['YearMonth'] = df_temp['Date_Time'].dt.to_period('M')
+    df_temp['WeekOfMonth'] = df_temp['Date_Time'].dt.day.apply(lambda d: (d - 1) // 7 + 1)
+    
+    meses_incompletos = []
+    for mes in df_temp['YearMonth'].unique():
+        df_mes = df_temp[df_temp['YearMonth'] == mes]
+        semanas_unicas = df_mes['WeekOfMonth'].nunique()
+        
+        # Un mes completo debe tener al menos 4 semanas de datos
+        if semanas_unicas < 4:
+            meses_incompletos.append(mes)
+    
+    return meses_incompletos
+
 # Columnas Core
 CORE_COLUMNS = [
     'Date_Time', 'Audience', 'Contact Type', 'NPS_Score', 'CSAT_Pct', 
@@ -731,12 +805,15 @@ def generar_pdf_resumen(df_metrics, df_raw, period_value, period_type='monthly',
             
             nps_count = curr.get('NPS_Count', 0)
             nps_val_str = f"{curr['NPS']:.1f} ({int(nps_count)} encuestas)" if pd.notna(curr['NPS']) else "S/D"
+            csat_val_str = f"{curr['CSAT (%)']:.1f}%" if pd.notna(curr['CSAT (%)']) else "S/D"
+            firt_val_str = f"{curr['FiRT SLA (%)']:.1f}%" if pd.notna(curr['FiRT SLA (%)']) else "S/D"
+            reop_val_str = f"{curr['Ratio Reopen/Tickets (%)']:.1f}%" if pd.notna(curr['Ratio Reopen/Tickets (%)']) else "S/D"
 
             print_metric_line("Volumen", f"{curr['Contactos Recibidos']:,.0f}", vol_pct, is_higher_better=False, is_pct=True)
             print_metric_line("NPS Score", nps_val_str, nps_diff, is_higher_better=True, is_pct=False)
-            print_metric_line("CSAT (%)", f"{curr['CSAT (%)']:.1f}%", csat_diff, is_higher_better=True, is_pct=True)
-            print_metric_line("FiRT SLA", f"{curr['FiRT SLA (%)']:.1f}%", firt_diff, is_higher_better=True, is_pct=True)
-            print_metric_line("Ratio Reopen", f"{curr['Ratio Reopen/Tickets (%)']:.1f}%", reop_diff, is_higher_better=False, is_pct=True)
+            print_metric_line("CSAT (%)", csat_val_str, csat_diff, is_higher_better=True, is_pct=True)
+            print_metric_line("FiRT SLA", firt_val_str, firt_diff, is_higher_better=True, is_pct=True)
+            print_metric_line("Ratio Reopen", reop_val_str, reop_diff, is_higher_better=False, is_pct=True)
 
             # Análisis de detractores usando el período correcto
             insight_nps = analizar_detractores(df_raw, aud, period_value, period_type)
@@ -1260,6 +1337,24 @@ file_brandwatch = st.file_uploader("🔍 Brandwatch (CSV) - Opcional", type=['cs
 
 if file_main is not None:
     with st.spinner('Aplicando reglas de negocio, limpiando y analizando datos...'):
+        # Primero validar el archivo antes de procesarlo
+        file_main.seek(0)
+        df_preview = read_csv_robust(file_main)
+        errors, warnings = validar_datos(df_preview, "archivo maestro")
+        
+        # Mostrar errores críticos
+        if errors:
+            st.error("🚫 **Error en el archivo subido:**\n\n" + "\n\n".join(errors))
+            st.stop()
+        
+        # Mostrar advertencias
+        if warnings:
+            with st.sidebar.expander("⚠️ Advertencias del archivo", expanded=True):
+                for w in warnings:
+                    st.warning(w)
+        
+        # Ahora cargar los datos procesados
+        file_main.seek(0)
         df_raw = load_main_data(file_main, include_abibot=include_abibot)
         
         # Si hay archivo de WhatsApp, cargarlo y combinar
@@ -1309,6 +1404,14 @@ if file_main is not None:
     if period_type == 'monthly':
         current_period = pd.Period(f"{today.year}-{today.month:02d}", freq='M')
         available_periods = [p for p in available_periods if p < current_period]
+        
+        # Detectar y advertir sobre meses con datos incompletos
+        meses_incompletos = detectar_meses_incompletos(df_raw, period_type)
+        if meses_incompletos:
+            meses_str = [str(m) for m in meses_incompletos if m in available_periods]
+            if meses_str:
+                with st.sidebar.expander("⚠️ Meses con datos incompletos", expanded=False):
+                    st.warning(f"Los siguientes meses tienen menos de 4 semanas de datos:\n• " + "\n• ".join(meses_str))
     else:
         # Para semanal, excluir la semana actual (incompleta)
         current_week = today.isocalendar()[1]
@@ -1433,8 +1536,13 @@ if file_main is not None:
             
             c5, c6, c7 = st.columns(3)
             period_label = "este período" if period_type == 'weekly' else "este mes"
-            with c5: st.metric("NPS Score", f"{curr['NPS']:.2f}", calc_delta_abs(curr['NPS'], prev['NPS']), delta_color="normal", help=f"Basado en {int(curr.get('NPS_Count', 0))} encuestas {period_label}")
-            with c6: st.metric("CSAT", f"{curr['CSAT (%)']:.1f}%", calc_delta_abs(curr['CSAT (%)'], prev['CSAT (%)']) + "%", delta_color="normal")
+            nps_display = f"{curr['NPS']:.2f}" if pd.notna(curr['NPS']) else "S/D"
+            nps_delta = calc_delta_abs(curr['NPS'], prev['NPS']) if pd.notna(curr['NPS']) else None
+            with c5: st.metric("NPS Score", nps_display, nps_delta, delta_color="normal", help=f"Basado en {int(curr.get('NPS_Count', 0))} encuestas {period_label}")
+            
+            csat_display = f"{curr['CSAT (%)']:.1f}%" if pd.notna(curr['CSAT (%)']) else "S/D"
+            csat_delta = calc_delta_abs(curr['CSAT (%)'], prev['CSAT (%)']) + "%" if pd.notna(curr['CSAT (%)']) else None
+            with c6: st.metric("CSAT", csat_display, csat_delta, delta_color="normal")
             
             st.divider()
             
