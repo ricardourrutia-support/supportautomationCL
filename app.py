@@ -92,12 +92,49 @@ def detectar_meses_incompletos(df, period_type='monthly'):
     
     return meses_incompletos
 
+# ============================================================
+#  METODOLOGÍA HOMOLOGADA DE INDICADORES DE SUPPORT
+#  (1) Solo tickets entrantes (Inbound)
+#  (2) Fecha de referencia = cierre del ticket (Solved At)
+#  (3) Emergencias y Aeropuerto separadas de Rider
+#  (4) Geografía por Agency From (no por prefijo de grupo)
+#  (5) B2B = requester Corporate menos grupos no-B2B
+# ============================================================
+
+# (4) Geografía: criterio Global. El export suele venir solo CL,
+#     así que esto normalmente no descarta nada, pero deja la regla
+#     en el campo correcto en vez del prefijo del grupo.
+EXCLUDED_AGENCIES = ['BR', 'DO', 'EC', 'MX', 'PA', 'PT']
+
+# Grupos internos / de función: se excluyen en todas las audiencias.
+# (En los exports actuales no aparecen, se mantienen por robustez.)
+GRUPOS_EXCLUIDOS_GLOBAL_REGEX = r'admin|fraude|applicants support'
+GRUPOS_EXCLUIDOS_GLOBAL_PREFIX = ('global', 'cex ')
+
+# (5) Grupos que NO son B2B aunque el requester sea Corporate.
+#     Decisión de negocio. Se aplica SOLO a la audiencia B2B:
+#     los tickets de emergencias/aeropuerto igual se reasignan a su
+#     propia audiencia por precedencia (ver clasificación abajo).
+GRUPOS_EXCLUIDOS_B2B_REGEX = (
+    r'applicants support'      # applicants support
+    r'|csc|bpo'                # tn csc - bpo global
+    r'|emergenc|energenc'      # emergencias (rider/drivers)
+    r'|logistic'               # logistics (incl. tn logistics b2b)
+    r'|admin'                  # admin
+    r'|objetos? perdidos?'     # tn objetos perdidos
+)
+
+# Tickets que cayeron en una bandeja por error y no deben contribuir
+# a métricas (equivale a EXCLUDED_TICKETS_V1 del dashboard B2B).
+EXCLUDED_TICKETS = set()
+
 # Columnas Core
 CORE_COLUMNS = [
     'Date_Time', 'Audience', 'Contact Type', 'NPS_Score', 'CSAT_Pct', 
     'FRT_Hours', 'FuRT_Hours', 'Reopen_Count', 'Tag_1', 'Tag_2', 
     'Tag_3', 'Chat_Missed', 'Description', 'Group_Name', 'Include_Contacts', 'Service_Type',
-    'Assignee_Email', 'Assignee_FullName', 'Ticket_Number', 'Automated'
+    'Assignee_Email', 'Assignee_FullName', 'Ticket_Number', 'Automated',
+    'Inbound_Outbound', 'Agency_From', 'Solved_At'
 ]
 
 # --- LECTOR ROBUSTO DE CSV ---
@@ -138,10 +175,12 @@ def standard_clean(df, mapping):
 
 # --- CARGA DEL REPORTE MAESTRO ---
 @st.cache_data
-def load_main_data(filepath, include_abibot=False):
+def load_main_data(filepath, include_abibot=True):
     df = read_csv_robust(filepath)
     df = df.loc[:, ~df.columns.duplicated()] 
     
+    # OJO: standard_clean recorta el DataFrame a estas columnas.
+    # Todo campo que se use más abajo tiene que estar declarado acá.
     mapping = {
         'Date_Time': 'Date_Time', 'Audience': 'Audience', 'Contact Type': 'Contact Type',
         'NPS Score': 'NPS_Score', '% CSAT': 'CSAT_Pct', '# First Reply Time (Hours)': 'FRT_Hours',
@@ -151,7 +190,10 @@ def load_main_data(filepath, include_abibot=False):
         'Description': 'Description', 'Group name support': 'Group_Name',
         'Include Contacts': 'Include_Contacts', 'Service Type': 'Service_Type',
         'Assignee Email': 'Assignee_Email', 'Assignee FullName': 'Assignee_FullName', 
-        'Ticket Number': 'Ticket_Number', 'Automated': 'Automated'
+        'Ticket Number': 'Ticket_Number', 'Automated': 'Automated',
+        'Ticket Inbound/Outbound': 'Inbound_Outbound',
+        'Agency From': 'Agency_From',
+        'Solved At Local Dt': 'Solved_At'
     }
     df = standard_clean(df, mapping)
     
@@ -163,29 +205,50 @@ def load_main_data(filepath, include_abibot=False):
     if 'Service_Type' in df.columns:
         df = df[~df['Service_Type'].astype(str).str.lower().str.contains('delivery', na=False)]
     
-    # FILTRO 3: Automated (configurable)
+    # FILTRO 3: Automated (configurable; por metodología el bot va INCLUIDO)
     if 'Automated' in df.columns and not include_abibot:
         df = df[df['Automated'].astype(str).str.strip() == 'Agent']
-        
+
+    # FILTRO 4: SOLO TICKETS ENTRANTES (metodología homologada)
+    if 'Inbound_Outbound' in df.columns:
+        df = df[df['Inbound_Outbound'].astype(str).str.strip().str.lower() == 'inbound']
+
+    # FILTRO 5: GEOGRAFÍA POR AGENCY FROM (reemplaza el prefijo de grupo)
+    if 'Agency_From' in df.columns:
+        _ag = df['Agency_From'].astype(str).str.strip().str.upper()
+        df = df[~_ag.isin(EXCLUDED_AGENCIES)]
+
+    # FILTRO 6: tickets excluidos manualmente (bandeja equivocada)
+    if EXCLUDED_TICKETS and 'Ticket_Number' in df.columns:
+        _tk = df['Ticket_Number'].astype(str).str.split('.').str[0].str.strip()
+        df = df[~_tk.isin(EXCLUDED_TICKETS)]
+
     if 'Audience' in df.columns and 'Group_Name' in df.columns:
         df['Audience'] = df['Audience'].replace({'Private': 'Rider', 'C4B': 'B2B', 'Driver': 'Driver'})
         gn = df['Group_Name'].astype(str).str.strip().str.lower()
-        
-        valid_b2b = ['cl b2b atencion', 'cl b2b atención', 'tn b2b atencion', 'tn b2b atención', 'auto answer', 'autoanswer']
-        mask_b2b = (df['Audience'] == 'B2B') & gn.isin(valid_b2b)
-        
-        invalid_rd = gn.str.contains('admin|fraude|applicants support', regex=True, na=False)
-        invalid_starts = gn.str.startswith(('global', 'co ', 'pe ', 'uy ', 'ar ', 'es ', 'cex '))
-        invalid_null = gn.isin(['null', 'nan', '', 'none'])
-        mask_rd = df['Audience'].isin(['Rider', 'Driver']) & ~invalid_rd & ~invalid_starts & ~invalid_null
-        
+
+        # Grupos internos / de función: fuera de todas las audiencias
+        invalid_internal = (
+            gn.str.contains(GRUPOS_EXCLUIDOS_GLOBAL_REGEX, regex=True, na=False)
+            | gn.str.startswith(GRUPOS_EXCLUIDOS_GLOBAL_PREFIX)
+            | gn.isin(['null', 'nan', '', 'none'])
+        )
+
+        # B2B = requester Corporate MENOS los grupos que no son B2B
+        no_b2b = gn.str.contains(GRUPOS_EXCLUIDOS_B2B_REGEX, regex=True, na=False)
+        mask_b2b = (df['Audience'] == 'B2B') & ~no_b2b & ~invalid_internal
+
+        mask_rd = df['Audience'].isin(['Rider', 'Driver']) & ~invalid_internal
+
         valid_em = ['tn emergencias drivers', 'tn energencias drivers', 
                     'tn emergencias rider', 'tn energencias rider',
                     'tn emergencias', 'tn energencias']
         mask_em = gn.isin(valid_em)
         
         mask_aero = (gn == 'cl aeropuerto local')
-        
+
+        # El orden importa: Emergencias y Aeropuerto sobrescriben y
+        # quedan SEPARADAS de Rider/Driver/B2B.
         df['Final_Audience'] = pd.Series(dtype='object', index=df.index)
         df.loc[mask_rd, 'Final_Audience'] = df.loc[mask_rd, 'Audience'].values
         df.loc[mask_b2b, 'Final_Audience'] = 'B2B'
@@ -194,8 +257,17 @@ def load_main_data(filepath, include_abibot=False):
         
         df = df[df['Final_Audience'].notna()]
         df['Audience'] = df['Final_Audience']
-        
-    if 'Date_Time' in df.columns:
+
+    # FECHA DE REFERENCIA = CIERRE DEL TICKET (Solved At).
+    # Antes se usaba Date_Time, que es el LUNES de la semana de cierre:
+    # sirve para semanal pero desplaza tickets en los bordes de mes.
+    if 'Solved_At' in df.columns:
+        _sv = pd.to_datetime(df['Solved_At'], format='%d/%m/%Y', errors='coerce')
+        if _sv.isna().mean() > 0.5:
+            _sv = pd.to_datetime(df['Solved_At'], dayfirst=True, errors='coerce')
+        df['Solved_At'] = _sv
+        df['Date_Time'] = _sv
+    elif 'Date_Time' in df.columns:
         df['Date_Time'] = pd.to_datetime(df['Date_Time'], format='%d/%m/%Y', errors='coerce')
         
     df = df.loc[:, ~df.columns.duplicated()]
@@ -209,8 +281,11 @@ def load_whatsapp_data(filepath):
     df = df.loc[:, ~df.columns.duplicated()]
     
     # Mapeo específico para este CSV
+    # Fecha de referencia = cierre del ticket (metodología homologada).
+    # Se deja Created At como respaldo si el export no trae Solved At.
     mapping = {
-        'Created At Local Dt': 'Date_Time',
+        'Solved At Local Dt': 'Date_Time',
+        'Created At Local Dt': 'Date_Time_Fallback',
         'Ticket Number': 'Ticket_Number',
         '# First Reply Time (Min)': 'FRT_Min',
         '# Full Resolution Time (Hours)': 'FuRT_Hours',
@@ -224,6 +299,12 @@ def load_whatsapp_data(filepath):
     
     existing_mapping = {k: v for k, v in mapping.items() if k in df.columns}
     df = df[list(existing_mapping.keys())].rename(columns=existing_mapping)
+
+    # Si el export no trae Solved At, usar Created At como respaldo
+    if 'Date_Time' not in df.columns and 'Date_Time_Fallback' in df.columns:
+        df['Date_Time'] = df['Date_Time_Fallback']
+    if 'Date_Time_Fallback' in df.columns:
+        df = df.drop(columns=['Date_Time_Fallback'])
     
     # Parsear números
     for c in ['FRT_Min', 'FuRT_Hours', 'CSAT_Pct', 'NPS_Score']:
@@ -1325,8 +1406,8 @@ period_type = st.sidebar.radio(
 # Filtro 2: Incluir Abi/Bot
 include_abibot = st.sidebar.checkbox(
     "🤖 Incluir tickets Abi/Bot (Automatizados)",
-    value=False,
-    help="Si está desactivado, solo se incluyen tickets con Automated='Agent' (coincide con Tableau)"
+    value=True,
+    help="Metodología homologada: el bot va INCLUIDO. Si se desactiva, solo entran tickets con Automated='Agent'."
 )
 
 st.sidebar.divider()
