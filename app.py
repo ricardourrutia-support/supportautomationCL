@@ -68,7 +68,14 @@ def validar_datos(df, source_name="archivo"):
     
     if empty_cols:
         warnings.append(f"⚠️ Columnas con pocos datos:\n" + "\n".join(empty_cols))
-    
+
+    # Universo de contactos: sin esta columna no se puede aplicar la regla (6)
+    if 'Universe' not in df.columns:
+        warnings.append(
+            "⚠️ El archivo no trae la columna **Universe**: no se puede descartar "
+            "los contactos con Universe = 0 y el volumen quedará inflado."
+        )
+
     return errors, warnings
 
 def detectar_meses_incompletos(df, period_type='monthly'):
@@ -99,6 +106,7 @@ def detectar_meses_incompletos(df, period_type='monthly'):
 #  (3) Emergencias y Aeropuerto separadas de Rider
 #  (4) Geografía por Agency From (no por prefijo de grupo)
 #  (5) B2B = requester Corporate menos grupos no-B2B
+#  (6) Solo tickets con Universe = 1 (se descarta Universe = 0)
 # ============================================================
 
 # (4) Geografía: criterio Global. El export suele venir solo CL,
@@ -128,13 +136,22 @@ GRUPOS_EXCLUIDOS_B2B_REGEX = (
 # a métricas (equivale a EXCLUDED_TICKETS_V1 del dashboard B2B).
 EXCLUDED_TICKETS = set()
 
+# (6) UNIVERSO DE CONTACTOS.
+#     'Universe' marca si el ticket entra en el universo de contactos
+#     gestionables (1) o no (0). Los Universe = 0 son mayoritariamente
+#     autorespuestas del grupo [Auto answer] por canal API: no son
+#     contactos reales y no deben contribuir a ninguna métrica.
+#     Coincide 1 a 1 con '# Tickets (With Management)'.
+#     Regla fija de la metodología homologada: no es configurable.
+EXCLUIR_UNIVERSE_CERO = True
+
 # Columnas Core
 CORE_COLUMNS = [
     'Date_Time', 'Audience', 'Contact Type', 'NPS_Score', 'CSAT_Pct', 
     'FRT_Hours', 'FuRT_Hours', 'Reopen_Count', 'Tag_1', 'Tag_2', 
     'Tag_3', 'Chat_Missed', 'Description', 'Group_Name', 'Include_Contacts', 'Service_Type',
     'Assignee_Email', 'Assignee_FullName', 'Ticket_Number', 'Automated',
-    'Inbound_Outbound', 'Agency_From', 'Solved_At'
+    'Inbound_Outbound', 'Agency_From', 'Solved_At', 'Universe'
 ]
 
 # --- LECTOR ROBUSTO DE CSV ---
@@ -193,7 +210,8 @@ def load_main_data(filepath, include_abibot=True):
         'Ticket Number': 'Ticket_Number', 'Automated': 'Automated',
         'Ticket Inbound/Outbound': 'Inbound_Outbound',
         'Agency From': 'Agency_From',
-        'Solved At Local Dt': 'Solved_At'
+        'Solved At Local Dt': 'Solved_At',
+        'Universe': 'Universe'
     }
     df = standard_clean(df, mapping)
     
@@ -218,7 +236,19 @@ def load_main_data(filepath, include_abibot=True):
         _ag = df['Agency_From'].astype(str).str.strip().str.upper()
         df = df[~_ag.isin(EXCLUDED_AGENCIES)]
 
-    # FILTRO 6: tickets excluidos manualmente (bandeja equivocada)
+    # FILTRO 6: UNIVERSO DE CONTACTOS (metodología homologada)
+    # Se eliminan los tickets con Universe = 0: autorespuestas y
+    # contactos no gestionables que inflaban el volumen.
+    # Los valores vacíos NO se descartan (vacío != 0), para no perder
+    # filas si un export trae la columna incompleta.
+    if EXCLUIR_UNIVERSE_CERO and 'Universe' in df.columns:
+        _uni = pd.to_numeric(
+            df['Universe'].astype(str).str.strip().str.replace(',', '.', regex=False),
+            errors='coerce'
+        )
+        df = df[~(_uni == 0)]
+
+    # FILTRO 7: tickets excluidos manualmente (bandeja equivocada)
     if EXCLUDED_TICKETS and 'Ticket_Number' in df.columns:
         _tk = df['Ticket_Number'].astype(str).str.split('.').str[0].str.strip()
         df = df[~_tk.isin(EXCLUDED_TICKETS)]
@@ -1433,6 +1463,19 @@ if file_main is not None:
             with st.sidebar.expander("⚠️ Advertencias del archivo", expanded=True):
                 for w in warnings:
                     st.warning(w)
+
+        # Trazabilidad de la regla (6): cuántos contactos se descartan
+        if EXCLUIR_UNIVERSE_CERO and 'Universe' in df_preview.columns:
+            _u = pd.to_numeric(
+                df_preview['Universe'].astype(str).str.strip().str.replace(',', '.', regex=False),
+                errors='coerce'
+            )
+            _n_cero = int((_u == 0).sum())
+            if _n_cero:
+                st.sidebar.caption(
+                    f"🚫 Universe = 0 descartados: {_n_cero:,} de {len(df_preview):,} filas del archivo"
+                    .replace(',', '.')
+                )
         
         # Ahora cargar los datos procesados
         file_main.seek(0)
